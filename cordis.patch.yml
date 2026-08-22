@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-model-detector
+      name: 'dsh-model-detector'
