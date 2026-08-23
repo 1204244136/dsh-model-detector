@@ -3,13 +3,18 @@
  *
  * 作用：为「线上发现」补全线上端点不声明的元数据——输入模态（input）、
  * 容量（contextWindow/maxTokens）、推理（reasoning）、协议兼容（compat）。
+ * 同时兜底「目录/模板提供方」的 baseURL：DSH 的 llm 服务不暴露查询提供方
+ * baseURL 的接口，而 llm-pi-ai 命名空间的解析值里目录路由也不带显式
+ * baseURL（运行时才从 pi-ai 目录继承）。本清单按提供方路由 keyed，为所有
+ * 官方（pi-ai 目录）模板写上它们已写定的 baseURL，使插件列表、/discover、
+ * /apply 在 profile 缺 baseURL 时也有处可依；api 缺省时仍由 pi-ai 目录在
+ * 运行时按模型给出，这里不强行写死（避免把 catalog 路由改成显式协议路由）。
  *
  * 线上 `GET /models` 只返回 id/owned_by，永远拿不到模态；pi-ai 目录有模态但
  * 滞后。本清单即「与最新模型同步、但由人工维护的元数据」来源。
  *
- * 结构按「提供方路由 keyed」设计，可扩展到任意提供方；当前以 opencode-go
- * 为全量样本。合并原则：已知模型用清单补齐，未知模型回退 text + 默认容量
- * （保守，绝不误判为视觉）。
+ * 合并原则：已知模型用清单补齐，未知模型回退 text + 默认容量（保守，
+ * 绝不误判为视觉）。
  */
 
 export interface ManifestModel {
@@ -91,6 +96,46 @@ export const MANIFEST: Record<string, ManifestProvider> = {
       'qwen3.5-plus': { input: ['text'], contextWindow: 1000000, maxTokens: 65536, reasoning: true },
     },
   },
+
+  // ── 官方模板 baseURL 兜底（provider 级，models 留空）───────────────
+  // 以下为 DSH 随 pi-ai 目录提供的全部「官方模板」。它们的 baseURL 已写在
+  // pi-ai 目录里（node_modules/@earendil-works/pi-ai/dist/providers/*），但未
+  // 透出到 llm 服务 / llm-pi-ai 解析值，插件读到的 profile 只有用户显式写的
+  // 字段，故目录路由（如 openrouter）的 baseURL 在插件里显示为空。这里照
+  // opencode-go 的写法为每个官方模板补上已写定的 baseURL；api 省略，运行时
+  // 由 pi-ai 目录按模型给出，避免把 catalog 路由改成显式协议路由。
+  // 无固定 baseURL 的模板（azure-openai-responses / cloudflare-* / opencode /
+  // bearer-token 等按部署而定）不在此列。
+  'ant-ling': { baseURL: 'https://api.ant-ling.com/v1', models: {} },
+  'anthropic': { baseURL: 'https://api.anthropic.com', models: {} },
+  'cerebras': { baseURL: 'https://api.cerebras.ai/v1', models: {} },
+  'deepseek': { baseURL: 'https://api.deepseek.com', models: {} },
+  'fireworks': { baseURL: 'https://api.fireworks.ai/inference', models: {} },
+  'github-copilot': { baseURL: 'https://api.individual.githubcopilot.com', models: {} },
+  'google': { baseURL: 'https://generativelanguage.googleapis.com/v1beta', models: {} },
+  'groq': { baseURL: 'https://api.groq.com/openai/v1', models: {} },
+  'huggingface': { baseURL: 'https://router.huggingface.co/v1', models: {} },
+  'kimi-coding': { baseURL: 'https://api.kimi.com/coding', models: {} },
+  'minimax': { baseURL: 'https://api.minimax.io/anthropic', models: {} },
+  'minimax-cn': { baseURL: 'https://api.minimaxi.com/anthropic', models: {} },
+  'mistral': { baseURL: 'https://api.mistral.ai', models: {} },
+  'moonshotai': { baseURL: 'https://api.moonshot.ai/v1', models: {} },
+  'moonshotai-cn': { baseURL: 'https://api.moonshot.cn/v1', models: {} },
+  'nvidia': { baseURL: 'https://integrate.api.nvidia.com/v1', models: {} },
+  'openai': { baseURL: 'https://api.openai.com/v1', models: {} },
+  'openai-codex': { baseURL: 'https://chatgpt.com/backend-api', models: {} },
+  'openrouter': { baseURL: 'https://openrouter.ai/api/v1', models: {} },
+  'qwen-token-plan': { baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', models: {} },
+  'qwen-token-plan-cn': { baseURL: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', models: {} },
+  'together': { baseURL: 'https://api.together.ai/v1', models: {} },
+  'vercel-ai-gateway': { baseURL: 'https://ai-gateway.vercel.sh', models: {} },
+  'xai': { baseURL: 'https://api.x.ai/v1', models: {} },
+  'xiaomi': { baseURL: 'https://api.xiaomimimo.com/v1', models: {} },
+  'xiaomi-token-plan-ams': { baseURL: 'https://token-plan-ams.xiaomimimo.com/v1', models: {} },
+  'xiaomi-token-plan-cn': { baseURL: 'https://token-plan-cn.xiaomimimo.com/v1', models: {} },
+  'xiaomi-token-plan-sgp': { baseURL: 'https://token-plan-sgp.xiaomimimo.com/v1', models: {} },
+  'zai': { baseURL: 'https://api.z.ai/api/coding/paas/v4', models: {} },
+  'zai-coding-cn': { baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', models: {} },
 }
 
 /** 归一化的模态文本标签，用于 UI 展示。 */
