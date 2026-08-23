@@ -43,13 +43,15 @@
 
 ## 构建（务必注意）
 
-`npm run build`（bash scripts/build.sh，host tsc）+ `npm run build:client`（tsdown）。
+`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`。
+
+> ✅ `scripts/build.mjs` **自动探测 tsc**：优先本地 `node_modules/typescript`，否则回退 DSH checkout 的 tsc（`$DSH_CHECKOUT` 或 `~/Documents/GitHub/deepseek-harness`）——**不再依赖 bash，也不需要本地 TypeScript**。
 
 > ⚠️ **构建依赖必须指向"已构建"的包**，不能指向只有源码的 checkout。
-> `scripts/build.sh` 用 `link_pkg` 把 `node_modules/cordis`、`node_modules/schemastery`、`node_modules/@deepseek-ai/dsh-*` 以 junction 关联到 `$CHECKOUT/vendor/*`。但某些 checkout 的 `vendor/*` 是**源码版**（只有 `src/`、无 `lib/`），tsc/运行时会报 `Cannot find module 'cordis'` 或 `dsh-tools/lib/index.js missing`。
+> `scripts/build.sh` 用 `link_pkg` 把 `node_modules/cordis`、`node_modules/schemastery`、`node_modules/@deepseek-ai/dsh-*` 以 junction 关联到 `$CHECKOUT/vendor/*`（或 DSH 安装）。某些 checkout 的 `vendor/*` 是**源码版**（只有 `src/`、无 `lib/`），tsc/运行时会报 `Cannot find module 'cordis'` 或 `dsh-tools/lib/index.js missing`。
 >
 > **可靠做法**：把这些依赖 junction 指向 DSH 安装里已构建的包（例如
-> `C:\Users\12042\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\cordis|schemastery|dsh-tools|dsh-llm`），再 `node <checkout>/node_modules/typescript/bin/tsc -p tsconfig.json` 编译 host、`npm run build:client` 编译 client。详见 `scripts/build.sh` 的 DSH_CHECKOUT 探测（默认偏好 `~/Documents/GitHub/deepseek-harness`）。
+> `C:\Users\12042\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\cordis|schemastery|dsh-tools|dsh-llm`），再 `node <checkout>/node_modules/typescript/bin/tsc -p tsconfig.json` 编译 host、`npm run build:client` 编译 client。`scripts/build.sh` 负责 junction 依赖链接与 DSH_CHECKOUT 探测（默认偏好 `~/Documents/GitHub/deepseek-harness`）。
 
 ## 目录结构
 
@@ -61,7 +63,8 @@
 │   ├── api.ts          发现合并/应用写入；models.dev 缓存；makeHostPlain；模态归一化
 │   ├── manifest.ts     薄覆盖清单（可扩展任意提供方）
 │   └── client/         React 设置页（Page.tsx / styles.ts / react.ts / index.ts）
-└── scripts/build.sh    host tsc 构建
+├── scripts/build.mjs   跨平台构建/类型检查（自动探测 tsc，无需 bash/本地 TypeScript）
+└── scripts/build.sh    junction 依赖链接 + host tsc 构建（参考，build.mjs 的可选补充）
 ```
 
 ## 改动时注意
@@ -83,6 +86,6 @@
 
 ## 发布（若新增发布)
 
-- 发布前：`tsc -p tsconfig.json --noEmit`（host）+ `npm run build:client`（client）务必通过。
+- 发布前：`npm run typecheck`（host）+ `npm run build:client`（client）务必通过。
 - `npm pack` 打包发布包（`*.tgz` 已被 `.gitignore` 忽略）；`lib/` 亦被忽略，不上传源码仓库。
 
