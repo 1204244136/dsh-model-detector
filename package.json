@@ -40,8 +40,8 @@
     "tsdown": "^0.22.14"
   },
   "scripts": {
-    "build": "bash scripts/build.sh",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/build.mjs --noEmit",
     "build:client": "tsdown"
   },
   "exports": {
