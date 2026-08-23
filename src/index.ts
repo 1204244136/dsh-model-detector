@@ -8,7 +8,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from 'schemastery'
 import {
   listConfiguredProviders, readJsonBody, subPath, fetchLiveModels, mergeDiscovered,
-  loadModelsDev, applyModels, readProviders, type HostCtx,
+  loadModelsDev, modelsDevStatus, applyModels, readProviders, type HostCtx,
 } from './api.js'
 import { manifestProvider } from './manifest.js'
 
@@ -71,22 +71,41 @@ export function apply(ctx: Context, config: Config): void {
             input: p?.defaultInput,
           }
           const modelsDev = await loadModelsDev()
+          const mdDiag = modelsDevStatus()
+          if (mdDiag.error) host.logger.warn('dsh-model-detector: models.dev 加载失败:', mdDiag.error)
+          const sourceCounts = (list: Array<Record<string, unknown>>) => {
+            const counts: Record<string, number> = {}
+            for (const m of list) {
+              const s = String((m as any)?.source ?? 'default')
+              counts[s] = (counts[s] || 0) + 1
+            }
+            return counts
+          }
           try {
             const liveIds = await fetchLiveModels(baseURL, apiKey)
             const merged = mergeDiscovered(route, liveIds.map((x: { id: string }) => x.id), defaults, modelsDev)
-            return json(res, 200, { ok: true, models: merged, source: 'live+models.dev', fromManifestOnly: false })
+            return json(res, 200, {
+              ok: true, models: merged, source: 'live+models.dev', fromManifestOnly: false,
+              modelsDevLoaded: mdDiag.loaded, modelsDevProviders: mdDiag.providers,
+              modelsDevError: mdDiag.error, providerInModelsDev: !!modelsDev?.[route],
+              sourceCounts: sourceCounts(merged),
+            })
           } catch (e: any) {
             // 线上拉取失败：只回退 models.dev / 内置清单（插件的目的是拿"线上"信息，
             // 不用提供方旧配置兜底）。两者都没有 → 0 模型 + 明确提示。
-            const mdIds = modelsDev?.[route] ? Object.keys(modelsDev[route]) : []
+            const mdIds = modelsDev?.[route]?.models ? Object.keys(modelsDev[route].models) : []
             const mpIds = mp ? Object.keys(mp.models) : []
             const ids = mdIds.length > 0 ? mdIds : mpIds
             const catalogWarn = ids.length === 0
               ? `${String(e?.message ?? e)} 且 models.dev/清单未收录该提供方`
               : String(e?.message ?? e)
+            const fallbackMerged = mergeDiscovered(route, ids, defaults, modelsDev)
             return json(res, 200, {
-              ok: true, models: mergeDiscovered(route, ids, defaults, modelsDev),
+              ok: true, models: fallbackMerged,
               source: 'fallback', fromManifestOnly: ids.length > 0, warn: catalogWarn,
+              modelsDevLoaded: mdDiag.loaded, modelsDevProviders: mdDiag.providers,
+              modelsDevError: mdDiag.error, providerInModelsDev: !!modelsDev?.[route],
+              sourceCounts: sourceCounts(fallbackMerged),
             })
           }
         }
