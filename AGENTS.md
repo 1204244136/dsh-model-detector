@@ -69,3 +69,20 @@
 - **改名**：批量字符串替换即可（包名、`export const name`、`API_PREFIX`、client `name`/`id`/`STYLE_ID`、`cordis.patch.yml`、label、tool 名）。**不要用 `Move-Item` 移动整个目录**——它处理带 junction 的 node_modules 会破坏依赖链接，导致构建/运行时报错（我们踩过）。改完 `node <tsc> -p tsconfig.json` + `npm run build:client` + 重装 + 重启即可。
 - **新增提供方 → manifest**：只改 `src/manifest.ts` 加一段 `MANIFEST[providerId]`；models.dev 若已收录则 manifest 无需覆盖。
 - **宿主注入依赖**：`ctx.get('settings')` / `host.get('credentials')` 直接取；webServer 路由用 `ctx.webServer.register`。
+
+## Git 提交规范（必读）
+
+- **提交信息用中文**：`subject` 一律简体中文；`type` / `scope` 保留英文关键字。
+- 遵守 **Conventional Commits**：`<type>(<scope>): <subject>`，例如
+  - `feat(api): 增加 models.dev 全局回退`
+  - `fix(client): 修复控制面板标签挤压`
+  - `docs: 更新仓库结构说明`
+  - `chore: 更新构建脚本`
+- 常用 `type`：`feat` / `fix` / `docs` / `refactor` / `perf` / `test` / `build` / `chore`。
+- `subject` 用中文、简短、祈使句（如「修复 XXX」「增加 XXX」）；破坏性变更加 `!` 或 `BREAKING CHANGE:` 说明。
+
+## 发布（若新增发布)
+
+- 发布前：`tsc -p tsconfig.json --noEmit`（host）+ `npm run build:client`（client）务必通过。
+- `npm pack` 打包发布包（`*.tgz` 已被 `.gitignore` 忽略）；`lib/` 亦被忽略，不上传源码仓库。
+
