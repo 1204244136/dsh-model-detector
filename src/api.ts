@@ -25,6 +25,73 @@ export function normalizeInput(modalities?: unknown): Array<'text' | 'image'> | 
   return set.has('image') ? ['text', 'image'] : ['text']
 }
 
+/**
+ * pi-ai 思考档位（DSH profile 层 reasoningEfforts 的合法键，升序）。
+ * 与 @earendil-works/pi-ai 的 ThinkingLevel 对齐：off/minimal/low/medium/high/xhigh/max。
+ */
+export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number]
+/** DSH 的 reasoningEfforts：档位 → wire 值；null 仅对 off 合法（= 参数缺席）。 */
+export type ReasoningEfforts = Partial<Record<ThinkingLevel, string | null>>
+
+/** 提取 models.dev 一条模型记录声明的档位集合（type=effort 的 values 数组）。 */
+function modelsDevEffortValues(md: unknown): string[] | undefined {
+  const opt = (md as any)?.reasoning_options
+  const arr = Array.isArray(opt) ? opt : opt ? [opt] : []
+  const effort = arr.find((o: any) => o && typeof o === 'object' && o.type === 'effort' && Array.isArray(o.values))
+  if (!effort || !Array.isArray(effort.values)) return undefined
+  const values = effort.values.map((v: unknown) => String(v))
+  return values.length > 0 ? values : undefined
+}
+
+/**
+ * models.dev reasoning_options → DSH reasoningEfforts。
+ *
+ * 不同模型声明的档位不同（如 muse-spark 是 minimal/low/medium/high/xhigh，
+ * qwen3.8-flash 是 low/medium/xhigh，kimi-k3 只有 max），因此逐模型读取，绝不
+ * 套用统一档位。wire 值 = 档位名本身（openai/deepseek/openrouter 等 effort 型
+ * 格式通用）；`none` → `off`（缺席参数）。只保留 pi-ai 认识的档位，未知档位
+ * 跳过（否则 DSH schema 会拒绝整个 profile）；若去掉 off 后没有任何档位
+ * （纯开关模型）→ undefined（不写，交给 catalog 兜底，避免 DSH 校验拒绝）。
+ */
+export function reasoningEffortsFromModelsDev(md: unknown): ReasoningEfforts | undefined {
+  const values = modelsDevEffortValues(md)
+  if (!values) return undefined
+  const out: ReasoningEfforts = {}
+  let hasThinking = false
+  for (const v of values) {
+    const level = v === 'none' ? 'off' : v
+    if (!(THINKING_LEVELS as readonly string[]).includes(level)) continue
+    if (level === 'off') { out.off = null; continue }
+    out[level as ThinkingLevel] = level
+    hasThinking = true
+  }
+  return hasThinking ? out : undefined
+}
+
+/**
+ * manifest thinkingLevelMap → DSH reasoningEfforts（人工 wire 值优先）。
+ * 非 off 档位为 null = 该档位不支持 → 跳过（DSH 只允许 off 留空值）；
+ * off 的 null → 保留（缺席参数）。只保留 pi-ai 认识的档位；
+ * 去掉 off 后没有档位 → undefined（不写）。
+ */
+export function reasoningEffortsFromManifest(tlm: Record<string, string | null> | undefined): ReasoningEfforts | undefined {
+  if (!tlm) return undefined
+  const out: ReasoningEfforts = {}
+  let hasThinking = false
+  for (const [level, wire] of Object.entries(tlm)) {
+    if (!(THINKING_LEVELS as readonly string[]).includes(level)) continue
+    if (level === 'off') {
+      if (wire === null || wire === undefined || wire === '') out.off = null
+      continue
+    }
+    if (wire === null || wire === undefined || wire === '') continue
+    out[level as ThinkingLevel] = wire
+    hasThinking = true
+  }
+  return hasThinking ? out : undefined
+}
+
 /** settings 服务子集（与 dsh-model-pro 相同）。 */
 export interface SettingsService {
   get(ns: string): Record<string, unknown> | undefined
@@ -226,7 +293,12 @@ export function mergeDiscovered(
     const contextWindow = md?.limit?.context ?? mf?.contextWindow ?? providerDefault.contextWindow
     const maxTokens = md?.limit?.output ?? mf?.maxTokens ?? providerDefault.maxTokens
     const input = normalizeInput(md?.modalities?.input) ?? mf?.input ?? defInput
-    const reasoning = md?.reasoning ?? mf?.reasoning
+    // 思考档位：manifest 人工覆盖（thinkingLevelMap，含精确 wire 值）优先 → models.dev
+    // 自动声明（reasoning_options）。两者都没有 → 不写，交给 pi-ai catalog 兜底。
+    const reasoningEfforts = reasoningEffortsFromManifest(mf?.thinkingLevelMap) ?? reasoningEffortsFromModelsDev(md)
+    // 是否推理（仅 UI 展示用；apply 时不写入——DSH 模型级 schema 无 reasoning 布尔字段，
+    // 推理能力由 reasoningEfforts 表达）。
+    const reasoning = reasoningEfforts !== undefined ? true : (md?.reasoning ?? mf?.reasoning ?? false)
     // 来源：models.dev > manifest > 保守默认（供 UI 区分"查得"与"兜底"）
     const source = md ? 'models-dev' : mf ? 'manifest' : 'default'
     return {
@@ -235,8 +307,8 @@ export function mergeDiscovered(
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxTokens ? { maxTokens } : {}),
       input: [...input],
-      ...(reasoning !== undefined ? { reasoning } : {}),
-      ...(mf?.thinkingLevelMap ? { thinkingLevelMap: mf.thinkingLevelMap } : {}),
+      ...(reasoning ? { reasoning } : {}),
+      ...(reasoningEfforts ? { reasoningEfforts } : {}),
       ...(mf?.compat ? { compat: mf.compat } : {}),
       source,
     }
@@ -259,7 +331,8 @@ export function mergeManifest(
     const contextWindow = (mf?.contextWindow ?? providerDefault.contextWindow)
     const maxTokens = (mf?.maxTokens ?? providerDefault.maxTokens)
     const input = (mf?.input ?? defInput)
-    const reasoning = mf?.reasoning
+    const reasoningEfforts = reasoningEffortsFromManifest(mf?.thinkingLevelMap)
+    const reasoning = reasoningEfforts !== undefined ? true : (mf?.reasoning ?? false)
     const source = mf ? 'manifest' : 'default'
     return {
       id,
@@ -267,18 +340,72 @@ export function mergeManifest(
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxTokens ? { maxTokens } : {}),
       input: [...input],
-      ...(reasoning !== undefined ? { reasoning } : {}),
-      ...(mf?.thinkingLevelMap ? { thinkingLevelMap: mf.thinkingLevelMap } : {}),
+      ...(reasoning ? { reasoning } : {}),
+      ...(reasoningEfforts ? { reasoningEfforts } : {}),
       ...(mf?.compat ? { compat: mf.compat } : {}),
       source,
     }
   })
 }
 
+/** DSH modelProfile 认识、可写入的模型字段（白名单，防止无效字段污染配置）。 */
+const MODEL_FIELDS = new Set(['id', 'name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat'])
+
+/** DSH compatProfile 认识的字段（过滤 manifest 之外的未知键，防 schema 漂移）。 */
+const COMPAT_FIELDS = new Set([
+  'supportsStore', 'supportsDeveloperRole', 'supportsReasoningEffort', 'supportsUsageInStreaming',
+  'supportsFinishReason', 'maxTokensField', 'requiresToolResultName', 'requiresAssistantAfterToolResult',
+  'requiresThinkingAsText', 'requiresReasoningContentOnAssistantMessages', 'thinkingFormat',
+  'chatTemplateKwargs', 'chatTemplateArgs', 'supportsThinkingTokenBudget', 'supportsStrictMode',
+  'cacheControlFormat', 'supportsLongCacheRetention', 'supportsEagerToolInputStreaming',
+  'supportsCacheControlOnTools', 'supportsTemperature', 'forceAdaptiveThinking', 'allowEmptySignature',
+  'supportsStrictTools',
+])
+
+/**
+ * 清洗一个模型条目为 DSH schema 接受的形状：只保留 modelProfile 认识的白名单字段。
+ * - 剔除 reasoning(布尔)/thinkingLevelMap/source 等 DSH 不认识的字段（会被 strip 或导致校验失败）
+ * - reasoningEfforts：仅接受 false 或「含至少一个非 off 档位」的 dict（空 dict 或只有 off 会被 DSH 拒绝）
+ * - compat：按 compatProfile 字段白名单过滤
+ * 无法产生合法条目（无 id 等）返回 null。
+ */
+function cleanModel(m: unknown): Record<string, unknown> | null {
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return null
+  const src = m as Record<string, unknown>
+  const id = typeof src.id === 'string' ? src.id : ''
+  if (!id) return null
+  const out: Record<string, unknown> = { id }
+  for (const field of MODEL_FIELDS) {
+    if (field === 'id') continue
+    const v = src[field]
+    if (v === undefined || v === null) continue
+    if (field === 'reasoningEfforts') {
+      if (v === false) { out.reasoningEfforts = false; continue }
+      if (typeof v === 'object' && !Array.isArray(v)) {
+        const dict = v as Record<string, unknown>
+        const hasThinking = Object.entries(dict).some(([k, w]) => k !== 'off' && typeof w === 'string' && w.length > 0)
+        if (hasThinking) out.reasoningEfforts = makeHostPlain(dict)
+      }
+      continue
+    }
+    if (field === 'compat' && typeof v === 'object' && !Array.isArray(v)) {
+      const c: Record<string, unknown> = {}
+      for (const k of Object.keys(v as Record<string, unknown>)) {
+        if (COMPAT_FIELDS.has(k)) c[k] = (v as Record<string, unknown>)[k]
+      }
+      if (Object.keys(c).length > 0) out.compat = makeHostPlain(c)
+      continue
+    }
+    out[field] = v
+  }
+  return out
+}
+
 /**
  * 应用：把富化后的 models 写入 `llm-pi-ai.providers.<route>.models`，
  * 保留该 section 的其它所有键；目录/模板路由缺 api/baseURL 时用清单兜底补齐
  * （否则目录外新模型因协议不统一而无法解析 api → 校验失败）。
+ * 写入前逐条清洗为 DSH schema 接受的字段（白名单），确保配置可解析。
  */
 export async function applyModels(st: SettingsService, route: string, models: Array<Record<string, unknown>>): Promise<void> {
   const preserved: Record<string, unknown> = {}
@@ -298,7 +425,8 @@ export async function applyModels(st: SettingsService, route: string, models: Ar
     const enriched: Record<string, unknown> = { ...cur }
     if (!enriched.api && mp?.api) enriched.api = mp.api
     if (!enriched.baseURL && mp?.baseURL) enriched.baseURL = mp.baseURL
-    if (models.length > 0) enriched.models = makeHostPlain(models)
+    const cleaned = models.map(cleanModel).filter((m): m is Record<string, unknown> => m !== null)
+    if (cleaned.length > 0) enriched.models = makeHostPlain(cleaned)
     else delete enriched.models
     providers[route] = enriched
   }

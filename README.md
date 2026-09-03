@@ -3,7 +3,7 @@
 **简体中文** · [English](README_en.md)
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.0.1-green.svg)](package.json)
+[![version](https://img.shields.io/badge/version-0.0.3-green.svg)](package.json)
 
 ![模型检测设置页](docs/preview.png)
 
@@ -19,8 +19,9 @@
 
 - **实时拉取**：直接打提供方 `/models`，拿到线上最新模型 id，无视模板目录的滞后。
 - **能力自动富化**：以 **models.dev** 为唯一权威能力源（上下文 / 输出 / 模态 / 推理），跨提供方回退，聚合网关亦可命中。
+- **思考档位按模型富化**：从 models.dev `reasoning_options` 读取每个模型自己的推理等级（如 Muse Spark → Minimal/Low/Medium/High/Xhigh、Qwen3.8 Flash → Low/Medium/Xhigh、Kimi K3 → Max），翻译成 DSH 的 `reasoningEfforts` 写回，让第三方模型在 DSH 中可设置思考强度。**绝不套用统一档位**；纯开关/无档位模型不写，交给 pi-ai 目录兜底。
 - **四级优先级**：当前提供方 models.dev → 全局 models.dev → 内置 manifest（薄覆盖）→ 保守默认。
-- **卡片式交互**：分页 + 搜索防抖 + 勾选应用，海量模型不卡顿；每张卡清晰标注数据来源。
+- **卡片式交互**：分页 + 搜索防抖 + 勾选应用，海量模型不卡顿；每张卡清晰标注数据来源与推理档位。
 - **来源透明**：区分「查得到」与「默认兜底」，models.dev 未收录时给出提示，不把默认当查得。
 
 ## 为什么做这个
@@ -32,14 +33,16 @@ DSH 原生对 pi-ai「模板（目录）提供方」的发现只回答**内置�
 ```
 线上 GET /models（最新 id）
     ↓ 合并
-models.dev（自动、社区维护的模态/容量/推理）—— 主源
+models.dev（自动、社区维护的模态/容量/推理/思考档位）—— 主源
     ↓ 覆盖
-内置 manifest（薄覆盖，仅兜底 models.dev 缺/错的个别模型）
+内置 manifest（薄覆盖，仅兜底 models.dev 缺/错的个别模型；thinkingLevelMap 人工档位优先）
     ↓ 兜底
 保守默认（text + 262144 / 32768）
 ```
 
 **模态归一化**：models.dev 可能标注 `video/pdf/audio`，而 DSH 只支持 `text/image`，插件归一为——含 `image` → `[text, image]`，否则 `[text]`。
+
+**思考档位 → DSH reasoningEfforts**：DSH 对模型的思考强度由 profile 层的 `reasoningEfforts`（档位 → wire 值）驱动，菜单只显示适配器公布的档位。插件从 models.dev `reasoning_options` 读取每个模型声明的档位（wire 值 = 档位名，`none` → `off`），manifest 的人工 `thinkingLevelMap` 优先（如 deepseek 的 `{high, max}` + `compat.thinkingFormat: deepseek`）。只有档位声明（非纯开关）才写，且只保留 pi-ai 词汇表（off/minimal/low/medium/high/xhigh/max）内的档位，避免 DSH 校验拒绝整个提供方。
 
 **来源判定**：每个模型合并后标 `source`：
 

@@ -12,6 +12,17 @@ const AUTO_SELECT_LIMIT = 200
 
 const MODALITY: Record<'text' | 'image', string> = { text: '文本', image: '图像' }
 
+/** pi-ai 思考档位（与 host 侧 THINKING_LEVELS 一致，升序），用于 UI 展示排序。 */
+const EFFORT_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/** 把 reasoningEfforts 格式化为可读档位串（如 `Low / High / Max`），无档位返回 undefined。 */
+const formatEfforts = (e?: Record<string, string | null>) => {
+  if (!e) return undefined
+  const levels = EFFORT_ORDER.filter((k) => k !== 'off' && e[k] !== undefined)
+  if (levels.length === 0) return undefined
+  return levels.map((k) => k.charAt(0).toUpperCase() + k.slice(1)).join(' / ')
+}
+
 /** 元数据来源标注：UI 据此区分「查得」与「兜底」，避免把默认当查得。 */
 const SOURCE_LABEL: Record<string, string> = {
   'models-dev': 'models.dev',
@@ -38,6 +49,8 @@ interface DiscoveredModel {
   maxTokens?: number
   input?: Array<'text' | 'image'>
   reasoning?: boolean
+  /** 思考档位 → wire 值（models.dev / 清单声明，按模型不同）；写回 profile 后 DSH 可设推理等级。 */
+  reasoningEfforts?: Record<string, string | null>
   /** 来源：models.dev / 内置清单 / 保守默认（未查到）。 */
   source?: 'models-dev' | 'manifest' | 'default'
 }
@@ -134,7 +147,7 @@ export function ModelCatalogPage(): React.ReactElement {
     try {
       const r = await fetch(`${API_PREFIX}/apply`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ route: sel, models: picked.map((m) => ({ id: m.id, name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens, input: m.input, ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}) })) }),
+        body: JSON.stringify({ route: sel, models: picked.map((m) => ({ id: m.id, name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens, input: m.input, ...(m.reasoningEfforts ? { reasoningEfforts: m.reasoningEfforts } : {}) })) }),
       })
       const j = await r.json()
       setStatus(j?.ok ? { ok: true, text: `已写入 ${j.count} 个模型到 ${j.route}` } : { ok: false, text: j?.error || '应用失败' })
@@ -243,6 +256,7 @@ export function ModelCatalogPage(): React.ReactElement {
                 )}
                 <div className="mc-entryMeta">
                   {(m.input || []).map((x) => <span key={x} className="mc-chip">{MODALITY[x]}</span>)}
+                  {formatEfforts(m.reasoningEfforts) && <span className="mc-chip mc-chip-effort">推理 {formatEfforts(m.reasoningEfforts)}</span>}
                   <span className="mc-metaItem">上下文 <b>{fmt(m.contextWindow)}</b></span>
                   <span className="mc-metaItem">输出 <b>{fmt(m.maxTokens)}</b></span>
                 </div>

@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-detector",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "DSH 模型检测：对任意 pi-ai 提供方，拉取其线上最新模型清单，并用 models.dev 自动富化正确模态/容量/推理后写入该提供方",
   "type": "module",
   "main": "./lib/index.js",

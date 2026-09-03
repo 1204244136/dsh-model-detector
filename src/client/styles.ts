@@ -108,6 +108,8 @@ export const CSS = `
 .mc-metaItem { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary, #57606a); }
 .mc-metaItem b { font-weight: 600; color: var(--dsw-alias-text-primary, #1f2328); }
 .mc-chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; line-height: 18px; background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06)); color: var(--dsw-alias-label-secondary, #57606a); }
+/* 推理档位 chip：区分于普通模态 chip，弱化强调但可辨识 */
+.mc-chip-effort { background: var(--dsw-alias-brand-primary, #0969da)22; color: var(--dsw-alias-brand-primary, #0969da); }
 
 /* ── source badge ── */
 .mc-src { display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 10px; font-size: 11px; line-height: 16px; }
