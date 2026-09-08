@@ -489,11 +489,17 @@ export function ModelCatalogPage(): React.ReactElement {
 
       {/* 控制面板 */}
       <section className="mc-panel">
-        <div className="mc-row">
+        {/* 顶行固定：提供方 + 主操作按钮永远同行（按钮组不收缩、不换行） */}
+        <div className="mc-row mc-rowTop">
           <label className="mc-field">
             <span className="mc-fieldLabel">提供方</span>
-            <select className="mc-select" value={sel} onChange={(e) => { setSel(e.target.value); setModels([]); setSelected(new Set()); setPage(1); setCur(null); setDrafts({}); setStatus(null) }}>
-              {providers.map((p) => <option key={p.route} value={p.route}>{p.displayName} ({p.route})</option>)}
+            <select
+              className="mc-select"
+              title={selProvider ? `${selProvider.displayName}（${selProvider.route}）` : ''}
+              value={sel}
+              onChange={(e) => { setSel(e.target.value); setModels([]); setSelected(new Set()); setPage(1); setCur(null); setDrafts({}); setStatus(null) }}
+            >
+              {providers.map((p) => <option key={p.route} value={p.route} title={`${p.displayName}（${p.route}）`}>{p.displayName}</option>)}
             </select>
           </label>
           <div className="mc-grow" />
@@ -515,6 +521,7 @@ export function ModelCatalogPage(): React.ReactElement {
           </span>
           {selProvider && (
             <div className="mc-metaRow">
+              <span className="mc-metaChip"><i>路由</i>{selProvider.route}</span>
               <span className="mc-metaChip"><i>baseURL</i>{selProvider.baseURL || '-'}</span>
               <span className="mc-metaChip"><i>协议</i>{selProvider.api || '-'}</span>
               <span className="mc-metaChip"><i>现有模型</i>{selProvider.modelCount}</span>
@@ -636,7 +643,7 @@ export function ModelCatalogPage(): React.ReactElement {
                   </select>
                 </label>
               </div>
-              <div className="mc-hintLine">保存任一模型后，`models` 列表会取代适配器默认目录，请把要用的模型都加进来。</div>
+              <div className="mc-hintLine">保存任一模型后，<code className="mc-code">models</code> 列表会取代适配器默认目录，请把要用的模型都加进来。</div>
             </section>
           )}
 

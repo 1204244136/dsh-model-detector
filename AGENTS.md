@@ -99,12 +99,20 @@
 ```
 
 > 改前端布局后跑 `node scripts/preview.mjs`，再用无头浏览器截图自查
-> （`msedge --headless --screenshot=out.png file:///.../layout.html`）；`FRAME_WIDTH=430` 可验证窄面板不重叠。
-> `.preview/` 已 gitignore。
+> （`msedge --headless --screenshot=out.png file:///.../layout.html`）；`FRAME_WIDTH=430` 可验证窄面板不重叠，
+> `MODE=discover` 可看发现模式（两个按钮，最挤的一档）。`.preview/` 已 gitignore。
 >
 > **布局硬约束（踩过）**：`.mc-row` 必须 `flex-wrap: wrap`，字段组 `.mc-field` 用 `flex: 0 1 auto`
 > 且 `.mc-fieldLabel` 用 `flex: none`——否则窄面板下两个 `select` 会**重叠**（截图里踩过）。
 > 卡片里的字段用 `.mc-fields` 网格（`auto-fit minmax(238px,1fr)`），标签列宽 `4.5em` 统一对齐。
+>
+> **两个必守规则**（否则按钮跑出容器右边界，都踩过）：
+> 1. `.mc-btn` 必须 `flex: none; white-space: nowrap`——在 `nowrap` 行里参与收缩会把按钮挤出面板。
+> 2. 任何可收缩的 flex 子项（`.mc-search`、`.mc-select`、`.mc-input`）必须 `min-width: 0`，
+>    否则其内容最小宽度会把同行的按钮顶出去。
+>
+> 顶行 `.mc-rowTop` 是 `nowrap`：**主操作按钮必须与「提供方」选择器同行**，切换模式（按钮数量变化）
+> 不允许换行——空间不足时由选择器收缩（省略号）让位，而不是把按钮挤到下一行。
 
 ## 改动时注意
 

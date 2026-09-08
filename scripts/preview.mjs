@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const MODE = process.env.MODE === 'discover' ? 'discover' : 'edit'
 const stylesSrc = readFileSync(join(root, 'src', 'client', 'styles.ts'), 'utf8')
 const css = stylesSrc.slice(stylesSrc.indexOf('`') + 1, stylesSrc.lastIndexOf('`'))
 
@@ -28,19 +29,21 @@ const html = `<!doctype html>
     <header class="mc-head"><span class="mc-headDot"></span><h3 class="mc-title">模型检测</h3></header>
 
     <section class="mc-panel">
-      <div class="mc-row">
+      <div class="mc-row mc-rowTop">
         <label class="mc-field">
           <span class="mc-fieldLabel">提供方</span>
-          <select class="mc-select"><option>DeepSeek（官方 API） (deepseek-official)</option></select>
+          <select class="mc-select"><option>DeepSeek（官方 API）</option></select>
         </label>
         <div class="mc-grow"></div>
         <div class="mc-actions">
-          <button class="mc-btn mc-btnPrimary"><span class="mc-btnIcon">↻</span>读取现有模型</button>
+          <button class="mc-btn mc-btnPrimary"><span class="mc-btnIcon">↻</span>${MODE === 'discover' ? '获取最新模型' : '读取现有模型'}</button>
+          ${MODE === 'discover' ? '<button class="mc-btn mc-btnAccent">应用所选<span class="mc-btnBadge">0</span></button>' : ''}
         </div>
       </div>
       <div class="mc-row">
-        <span class="mc-segGroup">${seg('发现新模型')}${seg('编辑现有模型', true)}</span>
+        <span class="mc-segGroup">${seg('发现新模型', MODE === 'discover')}${seg('编辑现有模型', MODE === 'edit')}</span>
         <div class="mc-metaRow">
+          ${chip('路由', 'deepseek-official')}
           ${chip('baseURL', 'https://api.deepseek.com')}
           ${chip('协议', 'openai-completions')}
           ${chip('现有模型', '4')}
@@ -48,7 +51,7 @@ const html = `<!doctype html>
         </div>
       </div>
     </section>
-
+${MODE === 'discover' ? '' : `
     <section class="mc-panel mc-panelSub">
       <div class="mc-panelHead"><span class="mc-panelTitle">路由级设置</span><span class="mc-panelSubNote">对所有模型生效</span></div>
       <div class="mc-row">
@@ -56,11 +59,13 @@ const html = `<!doctype html>
         <label class="mc-field"><span class="mc-fieldLabel mc-fieldLabelWide">thinking</span><select class="mc-select mc-selectNarrow"><option>enabled</option></select></label>
       </div>
       <div class="mc-hintLine">保存任一模型后，\`models\` 列表会取代适配器默认目录，请把要用的模型都加进来。</div>
-    </section>
+    </section>`}
 
     <div class="mc-toolbar">
-      <div class="mc-search"><span class="mc-searchIcon">⌕</span><input class="mc-input" placeholder="搜索模型号 / 展示名" readonly /></div>
-      <div class="mc-addBox"><input class="mc-input" placeholder="手填模型号，如 deepseek-v4.1-flash" readonly /><button class="mc-btn mc-btnSecondary mc-btnDense">添加模型</button></div>
+      <div class="mc-search"><span class="mc-searchIcon">⌕</span><input class="mc-input" placeholder="${MODE === 'discover' ? '搜索已发现模型（id / 模态）' : '搜索模型号 / 展示名'}" readonly /></div>
+      ${MODE === 'discover'
+        ? '<button class="mc-btn mc-btnSecondary mc-btnDense">全选当前（35）</button><button class="mc-btn mc-btnSecondary mc-btnDense">清空</button>'
+        : '<div class="mc-addBox"><input class="mc-input" placeholder="手填模型号，如 deepseek-v4.1-flash" readonly /><button class="mc-btn mc-btnSecondary mc-btnDense">添加模型</button></div>'}
     </div>
     <div class="mc-toolbar mc-toolbarEnd">
       <span class="mc-pageRange">共 4 个 · 本页 4</span>
@@ -72,6 +77,35 @@ const html = `<!doctype html>
     </div>
 
     <div class="mc-list">
+${MODE === 'discover' ? `
+      <div class="mc-entry mc-entry-on">
+        <label class="mc-entryTop">
+          <input type="checkbox" checked />
+          <span class="mc-lineTag">提供方</span>
+          <span class="mc-id">deepseek-v4.1-flash-expires-on-0910</span>
+          <span class="mc-entryBadges"><span class="mc-src mc-src-manifest">清单</span><span class="mc-note">内测</span></span>
+        </label>
+        <div class="mc-entryName"><span class="mc-lineTag">收录名</span><span class="mc-name">DeepSeek V4.1 Flash (内测, 2026-09-10 到期)</span></div>
+        <div class="mc-entryMeta">
+          <span class="mc-chip">文本</span><span class="mc-chip">图像</span>
+          <span class="mc-metaItem">上下文 <b>1,000,000</b></span>
+          <span class="mc-metaItem">输出 <b>384,000</b></span>
+        </div>
+      </div>
+      <div class="mc-entry">
+        <label class="mc-entryTop">
+          <input type="checkbox" />
+          <span class="mc-lineTag">提供方</span>
+          <span class="mc-id">deepseek-v4-pro</span>
+          <span class="mc-entryBadges"><span class="mc-src mc-src-models-dev">models.dev</span></span>
+        </label>
+        <div class="mc-entryName"><span class="mc-lineTag">收录名</span><span class="mc-name">DeepSeek V4 Pro</span></div>
+        <div class="mc-entryMeta">
+          <span class="mc-chip">文本</span><span class="mc-chip mc-chip-effort">推理 High / Max</span>
+          <span class="mc-metaItem">上下文 <b>1,000,000</b></span>
+          <span class="mc-metaItem">输出 <b>384,000</b></span>
+        </div>
+      </div>` : `
       <div class="mc-entry mc-entry-on">
         <div class="mc-entryTop">
           <span class="mc-lineTag">模型号</span>
@@ -117,7 +151,7 @@ const html = `<!doctype html>
           <div class="mc-grow"></div>
           <button class="mc-btn mc-btnDanger mc-btnDense" disabled>目录默认</button>
         </div>
-      </div>
+      </div>`}
     </div>
   </div>
 </div>

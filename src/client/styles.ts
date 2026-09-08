@@ -21,11 +21,18 @@ export const CSS = `
 .mc-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--dsw-alias-border-l2, #d0d7de); border-radius: 12px; background: var(--dsw-alias-bg-layer-1, #ffffff); }
 /* 控制行：可换行；子项可收缩但不叠字（flex-wrap 是防"两个 select 撞在一起"的关键） */
 .mc-row { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; min-width: 0; }
+/* 顶行（提供方 + 主操作按钮）：**永不换行**——按钮组固定与选择器同行，
+   切换模式导致按钮数量变化时也不会掉到下一行；空间不足由选择器让位（省略号） */
+.mc-rowTop { flex-wrap: nowrap; overflow: hidden; }
 .mc-grow { flex: 1 1 auto; min-width: 0; }
-/* 主操作按钮作为一组，始终在一起 */
-.mc-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; flex-shrink: 0; }
+/* 主操作按钮作为一组：不收缩、不换行 */
+.mc-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; flex: none; }
 /* 字段组：标签不收缩、控件可收缩；窄面板下整组换行 */
 .mc-field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary, #57606a); min-width: 0; flex: 0 1 auto; }
+/* 顶行里的选择器：优先 176px，空间不足时继续收缩（省略号），绝不把按钮挤走 */
+.mc-rowTop .mc-select { flex: 0 1 auto; width: 176px; min-width: 88px; max-width: 176px; }
+.mc-rowTop .mc-field { flex: 0 1 auto; min-width: 0; }
+.mc-rowTop .mc-fieldLabel { flex: none; }
 .mc-fieldLabel { flex: none; white-space: nowrap; }
 .mc-fieldLabelWide { min-width: 4.5em; }
 .mc-metaRow { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
@@ -42,6 +49,8 @@ export const CSS = `
   box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   height: 34px; padding: 0 14px; border: none; border-radius: 17px;
   font: inherit; font-size: 13px; line-height: 20px; font-weight: 500; cursor: pointer; color: inherit;
+  /* 按钮永不收缩：nowrap 行里参与收缩会把它挤出容器（踩过） */
+  flex: none; white-space: nowrap;
   transition: background .15s ease, border-color .15s ease, opacity .15s ease, box-shadow .15s ease;
 }
 .mc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -64,6 +73,8 @@ export const CSS = `
   font: inherit; font-size: 13px; line-height: 20px;
 }
 .mc-select { flex: 1 1 auto; min-width: 120px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 顶行内的按钮略紧凑，保证与选择器同行 */
+.mc-rowTop .mc-btn { height: 32px; padding: 0 11px; font-size: 12.5px; }
 .mc-input:focus, .mc-select:focus { outline: none; border-color: var(--dsw-alias-brand-primary, #0969da); box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.14); }
 
 /* 加载态：图标旋转而非换文案（保持按钮宽度稳定，避免布局抖动） */
@@ -89,11 +100,12 @@ export const CSS = `
 .mc-countNote { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 13px; line-height: 1; color: var(--dsw-alias-state-warn-label, #9a6700); background: rgba(154, 103, 0, 0.12); cursor: help; }
 
 /* ── toolbar ── */
-.mc-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.mc-search { position: relative; flex: 1 1 220px; min-width: 180px; }
+.mc-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+/* 搜索框可收缩：min-width:0 是关键，否则它把同行的按钮挤出容器 */
+.mc-search { position: relative; flex: 1 1 200px; min-width: 0; }
 .mc-searchIcon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--dsw-alias-label-tertiary, #8c959f); font-size: 14px; pointer-events: none; }
 .mc-search .mc-input { width: 100%; padding-left: 30px; }
-.mc-pager { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.mc-pager { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }
 .mc-pageNow { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary, #57606a); white-space: nowrap; }
 .mc-pageRange { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #8c959f); white-space: nowrap; }
 
@@ -169,6 +181,8 @@ export const CSS = `
 .mc-dirty { padding: 1px 8px; border-radius: 10px; font-size: 11px; line-height: 16px; background: rgba(154, 103, 0, 0.16); color: var(--dsw-alias-state-warn-label, #9a6700); }
 .mc-note { padding: 1px 8px; border-radius: 10px; font-size: 11px; line-height: 16px; background: rgba(154, 103, 0, 0.16); color: var(--dsw-alias-state-warn-label, #9a6700); cursor: help; }
 .mc-hintLine { margin-top: 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #8c959f); }
+/* 行内代码（提示文案里的字段名） */
+.mc-code { padding: 0 4px; border-radius: 5px; background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06)); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--dsw-alias-label-secondary, #57606a); }
 /* 工具栏：第一行搜索/操作，第二行分页（避免挤成一行换行错位） */
 .mc-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mc-toolbarEnd { justify-content: flex-end; }
