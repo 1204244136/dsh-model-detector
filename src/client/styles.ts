@@ -29,8 +29,9 @@ export const CSS = `
 .mc-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; flex: none; }
 /* 字段组：标签不收缩、控件可收缩；窄面板下整组换行 */
 .mc-field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary, #57606a); min-width: 0; flex: 0 1 auto; }
-/* 顶行里的选择器：优先 176px，空间不足时继续收缩（省略号），绝不把按钮挤走 */
-.mc-rowTop .mc-select { flex: 0 1 auto; width: 176px; min-width: 88px; max-width: 176px; }
+/* 顶行里的选择器：优先 176px；有富余就伸展（上限 300px）吸收空隙，
+   空间不足则收缩（省略号）——按钮组始终同行且贴右，选择器与按钮之间不留死空 */
+.mc-rowTop .mc-select { flex: 0 1 auto; width: 176px; min-width: 88px; max-width: 300px; }
 .mc-rowTop .mc-field { flex: 0 1 auto; min-width: 0; }
 .mc-rowTop .mc-fieldLabel { flex: none; }
 .mc-fieldLabel { flex: none; white-space: nowrap; }

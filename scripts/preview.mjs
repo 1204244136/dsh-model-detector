@@ -34,7 +34,6 @@ const html = `<!doctype html>
           <span class="mc-fieldLabel">提供方</span>
           <select class="mc-select"><option>DeepSeek（官方 API）</option></select>
         </label>
-        <div class="mc-grow"></div>
         <div class="mc-actions">
           <button class="mc-btn mc-btnPrimary"><span class="mc-btnIcon">↻</span>${MODE === 'discover' ? '获取最新模型' : '读取现有模型'}</button>
           ${MODE === 'discover' ? '<button class="mc-btn mc-btnAccent">应用所选<span class="mc-btnBadge">0</span></button>' : ''}

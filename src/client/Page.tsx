@@ -502,7 +502,6 @@ export function ModelCatalogPage(): React.ReactElement {
               {providers.map((p) => <option key={p.route} value={p.route} title={`${p.displayName}（${p.route}）`}>{p.displayName}</option>)}
             </select>
           </label>
-          <div className="mc-grow" />
           <div className="mc-actions">
             <button className="mc-btn mc-btnPrimary" disabled={busy || !sel} onClick={() => (mode === 'edit' ? void loadCurrent() : void discover())}>
               <span className={`mc-btnIcon ${busy ? 'mc-spin' : ''}`}>↻</span>{mode === 'edit' ? '读取现有模型' : '获取最新模型'}
