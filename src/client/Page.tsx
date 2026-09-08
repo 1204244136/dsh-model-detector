@@ -398,70 +398,62 @@ export function ModelCatalogPage(): React.ReactElement {
         <div className="mc-entryTop">
           <span className="mc-lineTag">模型号</span>
           <span className="mc-id">{m.id}</span>
-          {!m.configured && <span className="mc-src mc-src-default" title="适配器默认目录里的模型，尚未写进配置">目录</span>}
-          {m.inCatalog && <span className="mc-src mc-src-manifest" title="pi-ai 已安装目录条目，保存时写入 modelOverrides">override</span>}
-          {m.suggestedSource && <span className={`mc-src mc-src-${m.suggestedSource}`} title="建议值来源">{SOURCE_LABEL[m.suggestedSource]}</span>}
-          {m.note && <span className="mc-note" title={m.note}>内测</span>}
-          {dirty && <span className="mc-dirty">未保存</span>}
+          <span className="mc-entryBadges">
+            {!m.configured && <span className="mc-src mc-src-catalog" title="适配器默认目录里的模型，尚未写进配置">目录默认</span>}
+            {m.inCatalog && <span className="mc-src mc-src-manifest" title="pi-ai 已安装目录条目，保存时写入 modelOverrides">目录覆盖</span>}
+            {m.suggestedSource && <span className={`mc-src mc-src-${m.suggestedSource}`} title="建议值来源">{SOURCE_LABEL[m.suggestedSource]}</span>}
+            {m.note && <span className="mc-note" title={m.note}>内测</span>}
+            {dirty && <span className="mc-dirty">未保存</span>}
+          </span>
         </div>
 
         <div className="mc-fields">
-          <label className="mc-fieldInline">
+          <label className="mc-fieldRow">
             <span className="mc-fieldLabel">展示名</span>
-            <input className="mc-input mc-inputGrow" value={d.name} placeholder={m.id} onChange={(e) => patchDraft(m.id, { name: e.target.value })} />
+            <input className="mc-input" value={d.name} placeholder={m.id} onChange={(e) => patchDraft(m.id, { name: e.target.value })} />
           </label>
-          <label className="mc-fieldInline">
+          <label className="mc-fieldRow">
             <span className="mc-fieldLabel">上下文</span>
-            <input className="mc-input mc-inputNum" inputMode="numeric" value={d.contextWindow} placeholder="1000000" onChange={(e) => patchDraft(m.id, { contextWindow: e.target.value.replace(/[^\d]/g, '') })} />
+            <input className="mc-input" inputMode="numeric" value={d.contextWindow} placeholder="1000000" onChange={(e) => patchDraft(m.id, { contextWindow: e.target.value.replace(/[^\d]/g, '') })} />
           </label>
-          <label className="mc-fieldInline">
+          <label className="mc-fieldRow">
             <span className="mc-fieldLabel">输出上限</span>
-            <input className="mc-input mc-inputNum" inputMode="numeric" value={d.maxTokens} placeholder={target === 'deepseek' ? '256000' : '32768'} onChange={(e) => patchDraft(m.id, { maxTokens: e.target.value.replace(/[^\d]/g, '') })} />
+            <input className="mc-input" inputMode="numeric" value={d.maxTokens} placeholder={target === 'deepseek' ? '256000' : '32768'} onChange={(e) => patchDraft(m.id, { maxTokens: e.target.value.replace(/[^\d]/g, '') })} />
           </label>
-        </div>
-
-        <div className="mc-fields">
-          <span className="mc-fieldInline mc-fieldStatic">
+          <div className="mc-fieldRow">
             <span className="mc-fieldLabel">输入模态</span>
-            <span className="mc-segGroup">
+            <span className="mc-segGroup mc-segGroupSm">
               {(['text', 'image'] as const).map((x) => (
                 <button key={x} type="button" className={`mc-seg ${d.input.includes(x) ? 'mc-segOn' : ''}`} onClick={() => toggleModality(x)} title={x === 'image' ? '勾上后该模型才接受图片输入（未声明 = 纯文本）' : '文本输入'}>
                   {MODALITY[x]}
                 </button>
               ))}
             </span>
-          </span>
-          {m.suggestedSource && (m.suggested.contextWindow || m.suggested.maxTokens || (m.suggested.input && m.suggested.input.length > 0)) && (
-            <button type="button" className="mc-btn mc-btnSecondary mc-btnDense" onClick={() => adopt(m)} title="用 models.dev / 清单的建议值回填">采纳建议 {m.suggested.input && m.suggested.input.includes('image') ? '（含图像）' : ''}</button>
-          )}
+          </div>
         </div>
 
         {target === 'pi-ai' && (
-          <div className="mc-fields">
-            <span className="mc-fieldInline mc-fieldStatic">
-              <span className="mc-fieldLabel">思考档位</span>
-              <span className="mc-efforts">
-                {EFFORT_ORDER.map((lv) => {
-                  const on = d.efforts[lv] !== undefined
-                  return (
-                    <span key={lv} className="mc-effortItem">
-                      <button type="button" className={`mc-seg ${on ? 'mc-segOn' : ''}`} onClick={() => setEffort(lv, on ? undefined : lv)} title={lv === 'off' ? '关闭推理（参数缺席）' : `声明 ${lv} 档位`}>{lv}</button>
-                      {on && lv !== 'off' && (
-                        <input className="mc-input mc-inputWire" value={d.efforts[lv] ?? ''} placeholder="wire" onChange={(e) => setEffort(lv, e.target.value)} title="发给提供方的 wire 值（如 high / max / reasoning_effort 的取值）" />
-                      )}
-                      {on && lv === 'off' && <span className="mc-wireHint">空=不传</span>}
-                    </span>
-                  )
-                })}
-              </span>
+          <div className="mc-fieldRow mc-fieldRowTop">
+            <span className="mc-fieldLabel">思考档位</span>
+            <span className="mc-efforts">
+              {EFFORT_ORDER.map((lv) => {
+                const on = d.efforts[lv] !== undefined
+                return (
+                  <span key={lv} className="mc-effortItem">
+                    <button type="button" className={`mc-seg ${on ? 'mc-segOn' : ''}`} onClick={() => setEffort(lv, on ? undefined : lv)} title={lv === 'off' ? '关闭推理（参数缺席）' : `声明 ${lv} 档位`}>{lv}</button>
+                    {on && lv !== 'off' && (
+                      <input className="mc-input mc-inputWire" value={d.efforts[lv] ?? ''} placeholder="wire" onChange={(e) => setEffort(lv, e.target.value)} title="发给提供方的 wire 值（如 high / max / reasoning_effort 的取值）" />
+                    )}
+                    {on && lv === 'off' && <span className="mc-wireHint">空 = 不传</span>}
+                  </span>
+                )
+              })}
             </span>
           </div>
         )}
 
         {target === 'deepseek' && (
-          <div className="mc-entryMeta">
-            <span className="mc-metaItem mc-hintText">思考档位由「DeepSeek 官方 API」的路由级设置统一控制（off / low / high / max），不随模型单独设置。</span>
-          </div>
+          <div className="mc-hintLine">思考档位由上方「路由级设置」统一控制（off / low / high / max），不随单个模型设置。</div>
         )}
 
         {target === 'pi-ai' && (
@@ -473,11 +465,16 @@ export function ModelCatalogPage(): React.ReactElement {
 
         <div className="mc-entryActions">
           <button className="mc-btn mc-btnPrimary mc-btnDense" disabled={busy || savingId === m.id || !dirty} onClick={() => void saveModel(m)}>
-            {savingId === m.id ? '保存中…' : '保存'}
+            {savingId === m.id ? '保存中…' : dirty ? '保存' : '已保存'}
           </button>
           <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={busy || savingId === m.id || !dirty} onClick={() => patchDraft(m.id, toDraft(m.id, m.current, target))}>还原</button>
+          {m.suggestedSource && (m.suggested.contextWindow || m.suggested.maxTokens || (m.suggested.input && m.suggested.input.length > 0)) && (
+            <button type="button" className="mc-btn mc-btnSecondary mc-btnDense" onClick={() => adopt(m)} title="用 models.dev / 清单的建议值回填">
+              采纳建议{m.suggested.input && m.suggested.input.includes('image') ? '（含图像）' : ''}
+            </button>
+          )}
           <div className="mc-grow" />
-          <button className="mc-btn mc-btnDanger mc-btnDense" disabled={busy || savingId === m.id || !m.configured} onClick={() => void removeModel(m)} title={m.configured ? '从配置里删除该模型' : '该模型来自适配器默认目录，不在配置里'}>删除</button>
+          <button className="mc-btn mc-btnDanger mc-btnDense" disabled={busy || savingId === m.id || !m.configured} onClick={() => void removeModel(m)} title={m.configured ? '从配置里删除该模型' : '该模型来自适配器默认目录，不在配置里'}>{m.configured ? '删除' : '目录默认'}</button>
         </div>
       </div>
     )
@@ -531,11 +528,8 @@ export function ModelCatalogPage(): React.ReactElement {
       {busy && ((mode === 'discover' && models.length === 0) || (mode === 'edit' && cur === null)) && (
         <div className="mc-alert mc-alert-info"><span className="mc-alertIcon">⏳</span>{mode === 'edit' ? '正在读取现有模型…' : '正在获取模型列表…'}</div>
       )}
-      {status && !(busy && ((mode === 'discover' && models.length === 0) || (mode === 'edit' && cur === null))) && (
-        <div className={`mc-alert ${status.ok ? 'mc-alert-ok' : 'mc-alert-err'}`}>
-          <span className="mc-alertIcon">{status.ok ? '✓' : '✕'}</span>
-          <span>{status.text}</span>
-        </div>
+      {status && !status.ok && !(busy && ((mode === 'discover' && models.length === 0) || (mode === 'edit' && cur === null))) && (
+        <div className="mc-alert mc-alert-err"><span className="mc-alertIcon">✕</span><span>{status.text}</span></div>
       )}
       {mode === 'discover' && meta && meta.modelsDevLoaded === false && (
         <div className="mc-alert mc-alert-warn"><span className="mc-alertIcon">⚠</span>models.dev 加载失败{meta.modelsDevError ? `（${meta.modelsDevError}）` : ''}，能力仅靠清单/默认</div>
@@ -566,11 +560,13 @@ export function ModelCatalogPage(): React.ReactElement {
                 </div>
                 <button className="mc-btn mc-btnSecondary mc-btnDense" onClick={() => setSelected(new Set(filtered.map((m) => m.id)))}>全选当前（{filtered.length}）</button>
                 <button className="mc-btn mc-btnSecondary mc-btnDense" onClick={() => setSelected(new Set())}>清空</button>
+              </div>
+              <div className="mc-toolbar mc-toolbarEnd">
+                <span className="mc-pageRange">共 {filtered.length} 个 · 本页 {pageStart}-{pageEnd}</span>
                 <div className="mc-pager">
                   <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={safePage <= 1} onClick={() => setPage((p) => p - 1)}>上一页</button>
                   <span className="mc-pageNow">{safePage} / {totalPages} 页</span>
                   <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={safePage >= totalPages} onClick={() => setPage((p) => p + 1)}>下一页</button>
-                  <span className="mc-pageRange">共 {filtered.length} 个 · 本页 {pageStart}-{pageEnd}</span>
                 </div>
               </div>
 
@@ -583,8 +579,10 @@ export function ModelCatalogPage(): React.ReactElement {
                         <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
                         <span className="mc-lineTag">提供方</span>
                         <span className="mc-id">{m.id}</span>
-                        {m.source && <span className={`mc-src mc-src-${m.source}`}>{SOURCE_LABEL[m.source]}</span>}
-                        {m.note && <span className="mc-note" title={m.note}>内测</span>}
+                        <span className="mc-entryBadges">
+                          {m.source && <span className={`mc-src mc-src-${m.source}`}>{SOURCE_LABEL[m.source]}</span>}
+                          {m.note && <span className="mc-note" title={m.note}>内测</span>}
+                        </span>
                       </label>
                       {m.name && m.name !== m.id && (
                         <div className="mc-entryName" title="models.dev / 清单收录的展示名">
@@ -597,10 +595,10 @@ export function ModelCatalogPage(): React.ReactElement {
                         {formatEfforts(m.reasoningEfforts) && <span className="mc-chip mc-chip-effort">推理 {formatEfforts(m.reasoningEfforts)}</span>}
                         <span className="mc-metaItem">上下文 <b>{fmt(m.contextWindow)}</b></span>
                         <span className="mc-metaItem">输出 <b>{fmt(m.maxTokens)}</b></span>
-                        {m.source === 'default' && (
-                          <span className="mc-metaItem mc-hintText">未查到元数据（默认纯文本）——应用后可在「编辑现有模型」里手动勾上图像</span>
-                        )}
                       </div>
+                      {m.source === 'default' && (
+                        <div className="mc-hintLine">未查到元数据（按纯文本处理）——应用后可在「编辑现有模型」里勾上图像。</div>
+                      )}
                     </div>
                   )
                 })}
@@ -618,25 +616,28 @@ export function ModelCatalogPage(): React.ReactElement {
       {mode === 'edit' && (
         <>
           {cur && cur.target === 'deepseek' && (
-            <div className="mc-panel mc-panelSub">
+            <section className="mc-panel mc-panelSub">
+              <div className="mc-panelHead">
+                <span className="mc-panelTitle">路由级设置</span>
+                <span className="mc-panelSubNote">对所有模型生效</span>
+              </div>
               <div className="mc-row">
                 <label className="mc-field">
-                  <span className="mc-fieldLabel">推理档位</span>
+                  <span className="mc-fieldLabel mc-fieldLabelWide">推理档位</span>
                   <select className="mc-select mc-selectNarrow" value={cur.reasoningEffort ?? 'high'} disabled={busy || !cur.writable} onChange={(e) => void saveRouteSettings({ reasoningEffort: e.target.value })}>
                     {(cur.reasoningLevels.length > 0 ? cur.reasoningLevels : ['off', 'low', 'high', 'max']).map((lv) => <option key={lv} value={lv}>{lv}</option>)}
                   </select>
                 </label>
                 <label className="mc-field">
-                  <span className="mc-fieldLabel">thinking</span>
+                  <span className="mc-fieldLabel mc-fieldLabelWide">thinking</span>
                   <select className="mc-select mc-selectNarrow" value={cur.thinking ?? 'enabled'} disabled={busy || !cur.writable} onChange={(e) => void saveRouteSettings({ thinking: e.target.value })}>
                     <option value="enabled">enabled</option>
                     <option value="disabled">disabled</option>
                   </select>
                 </label>
-                <div className="mc-grow" />
-                <span className="mc-hintText">推理档位是路由级（所有模型共用）；保存任一模型后，该列表会取代适配器默认目录，请把要用的模型都加进来</span>
               </div>
-            </div>
+              <div className="mc-hintLine">保存任一模型后，`models` 列表会取代适配器默认目录，请把要用的模型都加进来。</div>
+            </section>
           )}
 
           {cur && (
@@ -650,11 +651,13 @@ export function ModelCatalogPage(): React.ReactElement {
                   <input className="mc-input" value={newId} placeholder="手填模型号，如 deepseek-v4.1-flash-expires-on-0910" onChange={(e) => setNewId(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addManual() }} />
                   <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={!newId.trim()} onClick={addManual}>添加模型</button>
                 </div>
+              </div>
+              <div className="mc-toolbar mc-toolbarEnd">
+                <span className="mc-pageRange">共 {filteredEdit.length} 个 · 本页 {editPageModels.length}</span>
                 <div className="mc-pager">
                   <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={editSafePage <= 1} onClick={() => setPage((p) => p - 1)}>上一页</button>
                   <span className="mc-pageNow">{editSafePage} / {editTotalPages} 页</span>
                   <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={editSafePage >= editTotalPages} onClick={() => setPage((p) => p + 1)}>下一页</button>
-                  <span className="mc-pageRange">共 {filteredEdit.length} 个</span>
                 </div>
               </div>
 
@@ -670,7 +673,7 @@ export function ModelCatalogPage(): React.ReactElement {
       )}
 
       {providers.length === 0 && !busy && (
-        <div className="mc-empty">当前未配置任何 pi-ai 提供方</div>
+        <div className="mc-empty">当前未配置任何提供方</div>
       )}
     </div>
   )

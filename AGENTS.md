@@ -94,8 +94,17 @@
 │   └── client/         React 设置页（Page.tsx / styles.ts / react.ts / index.ts），发现 + 编辑两模式
 ├── scripts/build.mjs   跨平台构建/类型检查（自动探测 tsc，无需 bash/本地 TypeScript）
 ├── scripts/verify.mjs  host 回归测试（npm run verify，假 settings 驱动 lib/）
+├── scripts/preview.mjs 布局预览（真实 CSS + 同构 DOM → .preview/layout.html；FRAME_WIDTH 调宽）
 └── scripts/build.sh    junction 依赖链接 + host tsc 构建（参考，build.mjs 的可选补充）
 ```
+
+> 改前端布局后跑 `node scripts/preview.mjs`，再用无头浏览器截图自查
+> （`msedge --headless --screenshot=out.png file:///.../layout.html`）；`FRAME_WIDTH=430` 可验证窄面板不重叠。
+> `.preview/` 已 gitignore。
+>
+> **布局硬约束（踩过）**：`.mc-row` 必须 `flex-wrap: wrap`，字段组 `.mc-field` 用 `flex: 0 1 auto`
+> 且 `.mc-fieldLabel` 用 `flex: none`——否则窄面板下两个 `select` 会**重叠**（截图里踩过）。
+> 卡片里的字段用 `.mc-fields` 网格（`auto-fit minmax(238px,1fr)`），标签列宽 `4.5em` 统一对齐。
 
 ## 改动时注意
 
