@@ -119,4 +119,44 @@ export const CSS = `
 
 /* ── empty / loading ── */
 .mc-empty { padding: 30px 12px; text-align: center; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary, #8c959f); border: 1px dashed var(--dsw-alias-border-l2, #d0d7de); border-radius: 12px; }
+
+/* ── 模式切换（segmented control） ── */
+.mc-segGroup { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--dsw-alias-border-l2, #d0d7de); border-radius: 12px; background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.04)); }
+.mc-seg {
+  box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  height: 26px; padding: 0 12px; border: 1px solid transparent; border-radius: 9px;
+  background: transparent; color: var(--dsw-alias-label-secondary, #57606a);
+  font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; white-space: nowrap;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.mc-seg:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06)); }
+.mc-segOn { background: var(--dsw-alias-bg-layer-1, #ffffff); color: var(--dsw-alias-brand-primary, #0969da); border-color: var(--dsw-alias-brand-primary, #0969da); font-weight: 500; }
+.mc-seg:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #0969da); outline-offset: 1px; }
+
+/* ── 编辑模式的表单 ── */
+.mc-panelSub { gap: 8px; background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.02)); }
+.mc-selectNarrow { flex: 0 0 auto; min-width: 90px; max-width: 140px; }
+.mc-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; }
+.mc-fieldInline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary, #57606a); min-width: 0; }
+.mc-fieldStatic { align-items: flex-start; }
+.mc-inputGrow { flex: 1 1 160px; min-width: 120px; }
+.mc-inputNum { width: 110px; }
+.mc-inputWire { width: 88px; height: 26px; padding: 0 8px; font-size: 12px; border-radius: 8px; }
+.mc-textarea { width: 100%; min-height: 46px; padding: 6px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 18px; resize: vertical; }
+.mc-efforts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.mc-effortItem { display: inline-flex; align-items: center; gap: 4px; }
+.mc-wireHint { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary, #8c959f); white-space: nowrap; }
+.mc-adv { margin-top: 8px; }
+.mc-advSum { cursor: pointer; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #8c959f); }
+.mc-advSum:hover { color: var(--dsw-alias-brand-primary, #0969da); }
+.mc-entryActions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.mc-btnDanger { border: 1px solid rgba(207, 34, 46, 0.36); background: transparent; color: var(--dsw-alias-state-error-primary, #cf222e); }
+.mc-btnDanger:hover:not(:disabled) { background: rgba(207, 34, 46, 0.10); }
+.mc-addBox { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 320px; min-width: 240px; }
+.mc-addBox .mc-input { flex: 1 1 auto; min-width: 140px; }
+.mc-dirty { margin-left: auto; padding: 1px 8px; border-radius: 10px; font-size: 11px; line-height: 16px; background: rgba(154, 103, 0, 0.16); color: var(--dsw-alias-state-warn-label, #9a6700); }
+.mc-note { padding: 1px 8px; border-radius: 10px; font-size: 11px; line-height: 16px; background: rgba(154, 103, 0, 0.16); color: var(--dsw-alias-state-warn-label, #9a6700); cursor: help; }
+.mc-hintText { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #8c959f); }
+/* 来源徽标：目录（适配器默认目录）/ override（pi-ai modelOverrides） */
+.mc-src-catalog { background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06)); color: var(--dsw-alias-label-tertiary, #57606a); }
 `

@@ -26,6 +26,8 @@ export interface ManifestModel {
   maxTokens?: number
   /** 是否推理模型；true 会带上 thinking 分发形态。 */
   reasoning?: boolean
+  /** 备注（UI 展示用，例如「内测模型，模态为推断值」）。 */
+  note?: string
   /** 推理档位 → wire 值映射（可选，deepseek 家族需要）。 */
   thinkingLevelMap?: Record<string, string | null>
   compat?: Record<string, unknown>
@@ -36,6 +38,21 @@ export interface ManifestProvider {
   api?: string
   /** 该提供方默认 baseURL。 */
   baseURL?: string
+  /**
+   * 写入目标：`pi-ai`（llm-pi-ai 段）或 `deepseek`（llm-deepseek 段，DeepSeek 官方 API）。
+   * 缺省 `pi-ai`。同一 route 键可能在两个段里都存在（如 `deepseek` 是 pi-ai 目录路由、
+   * `deepseek-official` 是内置 DeepSeek 适配器路由），因此这条只作兜底：实际命名空间
+   * 以 settings 里该 route 的归属为准。
+   */
+  target?: 'pi-ai' | 'deepseek'
+  /** 清单条目备注（UI 展示用，例如「内测模型」）。 */
+  note?: string
+  /**
+   * 该提供方「已安装目录」的模型（pi-ai 内置 catalog / 内置适配器默认 models）。
+   * 与 {@link models} 不同：这些模型未必在 profile 里显式配置，但适配器默认就会服务；
+   * 用于「编辑现有模型」时给出可编辑的候选（无需等线上发现）。
+   */
+  catalog?: Record<string, ManifestModel>
   models: Record<string, ManifestModel>
 }
 
@@ -109,7 +126,89 @@ export const MANIFEST: Record<string, ManifestProvider> = {
   'ant-ling': { baseURL: 'https://api.ant-ling.com/v1', models: {} },
   'anthropic': { baseURL: 'https://api.anthropic.com', models: {} },
   'cerebras': { baseURL: 'https://api.cerebras.ai/v1', models: {} },
-  'deepseek': { baseURL: 'https://api.deepseek.com', models: {} },
+  // ── DeepSeek 官方 API（内置 llm-deepseek 适配器 + pi-ai 目录路由）──────────
+  // 路由键有两种：内置适配器路由 `deepseek-official`（settings 段 `llm-deepseek`）
+  // 与 pi-ai 目录路由 `deepseek`（settings 段 `llm-pi-ai`）。两者都是
+  // https://api.deepseek.com 的 OpenAI 兼容端点，共用同一份模型元数据。
+  //
+  // 为什么必须在这里声明（而非只靠 models.dev）：
+  //  - 内置适配器 `dsh-llm-deepseek` 在收到图片时硬判定
+  //    `models.find(id)?.inputModalities?.includes('image') !== true` → 抛
+  //    `UNSUPPORTED_CONTENT`。即「手动填一个模型号」= 没写 inputModalities = 纯文本，
+  //    图片一律被拒（这正是 deepseek-v4.1-flash-expires-on-0910 的困境）。
+  //  - 线上 GET /models 只回 id/owned_by，永远拿不到模态。
+  'deepseek-official': {
+    api: 'openai-completions',
+    baseURL: 'https://api.deepseek.com',
+    target: 'deepseek',
+    // 适配器默认目录（未写进 settings 时也在服务），用于「编辑现有模型」同屏列出
+    catalog: {
+      'deepseek-v4-flash': { name: 'DeepSeek V4 Flash', input: ['text'], contextWindow: 1000000, reasoning: true },
+      'deepseek-v4-pro': { name: 'DeepSeek V4 Pro', input: ['text'], contextWindow: 1000000, reasoning: true },
+      'deepseek-v4-flash-vision-exp': { name: 'DeepSeek V4 Flash Vision (Exp)', input: ['text', 'image'], contextWindow: 1000000, reasoning: true },
+    },
+    models: {
+      'deepseek-v4-flash': {
+        name: 'DeepSeek V4 Flash',
+        input: ['text'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+      },
+      'deepseek-v4-pro': {
+        name: 'DeepSeek V4 Pro',
+        input: ['text'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+      },
+      'deepseek-v4-flash-vision-exp': {
+        name: 'DeepSeek V4 Flash Vision (Exp)',
+        input: ['text', 'image'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+      },
+      // 内测模型：官方 GET /models 与 models.dev 均未收录，只能手填模型号。
+      // 模态按「flash 家族 + vision 实验线」推断为 text+image；若实测被拒，用
+      // 「编辑现有模型」把输入模态改回文本即可。
+      'deepseek-v4.1-flash-expires-on-0910': {
+        name: 'DeepSeek V4.1 Flash (内测, 2026-09-10 到期)',
+        note: '内测模型，官方 /models 未收录；模态为推断值，可用「编辑现有模型」修正',
+        input: ['text', 'image'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+      },
+    },
+  },
+  'deepseek': {
+    baseURL: 'https://api.deepseek.com',
+    target: 'pi-ai',
+    models: {
+      'deepseek-v4-flash': {
+        name: 'DeepSeek V4 Flash',
+        input: ['text'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+        thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', max: 'max' },
+        compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: 'max_tokens', requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
+      },
+      'deepseek-v4-pro': {
+        name: 'DeepSeek V4 Pro',
+        input: ['text'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+        thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', max: 'max' },
+        compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: 'max_tokens', requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
+      },
+      'deepseek-v4-flash-vision-exp': {
+        name: 'DeepSeek V4 Flash Vision (Exp)',
+        input: ['text', 'image'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+        thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', max: 'max' },
+        compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: 'max_tokens', requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
+      },
+      'deepseek-v4.1-flash-expires-on-0910': {
+        name: 'DeepSeek V4.1 Flash (内测, 2026-09-10 到期)',
+        note: '内测模型，官方 /models 未收录；模态为推断值，可用「编辑现有模型」修正',
+        input: ['text', 'image'],
+        contextWindow: 1000000, maxTokens: 384000, reasoning: true,
+        thinkingLevelMap: { minimal: null, low: null, medium: null, high: 'high', max: 'max' },
+        compat: { supportsStore: false, supportsDeveloperRole: false, maxTokensField: 'max_tokens', requiresReasoningContentOnAssistantMessages: true, thinkingFormat: 'deepseek' },
+      },
+    },
+  },
   'fireworks': { baseURL: 'https://api.fireworks.ai/inference', models: {} },
   'github-copilot': { baseURL: 'https://api.individual.githubcopilot.com', models: {} },
   'google': { baseURL: 'https://generativelanguage.googleapis.com/v1beta', models: {} },
@@ -142,12 +241,46 @@ export const MANIFEST: Record<string, ManifestProvider> = {
 export const MODALITY_LABEL: Record<'text' | 'image', string> = { text: '文本', image: '图像' }
 
 /**
+ * 家族级模态推断：清单里没有的新模型号，若同族的清单条目声明了 image，就按同族
+ * 继承模态。用于内测/预发布模型（如 `deepseek-v4.1-flash-expires-on-0910` 与
+ * `deepseek-v4-flash-vision-exp` 同族）——避免"手填一个模型号 = 纯文本"。
+ *
+ * 只在**没有任何其它来源**声明模态时使用，且必须有同族条目；宁可保守（返回
+ * undefined 走纯文本）也不凭名字里的 vision 字样猜测。
+ *
+ * @param provider - 清单提供方（pi-ai 或 deepseek 目标都适用）
+ * @param id - 待推断的模型 id
+ * @returns 推断出的输入模态；无同族依据时 undefined
+ */
+export function inferFamilyInput(provider: ManifestProvider | undefined, id: string): Array<'text' | 'image'> | undefined {
+  if (!provider) return undefined
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const target = norm(id)
+  if (!target) return undefined
+  // 家族前缀 = 归一化 id 去掉尾部版本/日期/后缀噪声后的第一个字母数字段组
+  const family = target.split('-').filter((seg) => !/^\d+$/.test(seg)).slice(0, 2).join('-')
+  if (!family) return undefined
+  let hit: Array<'text' | 'image'> | undefined
+  for (const [key, m] of Object.entries(provider.models)) {
+    if (!m.input || !m.input.includes('image')) continue
+    const nk = norm(key)
+    if (nk === target) continue
+    if (nk.startsWith(family)) { hit = m.input; break }
+  }
+  return hit
+}
+
+/**
  * 提供方路由别名 → 清单主键。用户的提供方路由可能与目录 id 有差异（如
  * 自定义命名 `opencodego` vs 目录 `opencode-go`），归一化后都能命中清单。
  */
 const MANIFEST_ROUTE_ALIAS: Record<string, string> = {
   'opencodego': 'opencode-go',
   'opencode-go': 'opencode-go',
+  // 内置 DeepSeek 适配器路由（dsh-llm-deepseek）→ 清单主键同名；此处仅用于
+  // 让 `deepseekofficial` 之类的手写 route 也能命中清单。
+  'deepseekofficial': 'deepseek-official',
+  'deepseek-official': 'deepseek-official',
 }
 
 /** 取一个提供方路由的清单主键；无命中返回空串。 */

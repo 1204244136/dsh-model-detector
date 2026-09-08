@@ -3,7 +3,7 @@
 **简体中文** · [English](README_en.md)
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.0.3-green.svg)](package.json)
+[![version](https://img.shields.io/badge/version-0.0.4-green.svg)](package.json)
 
 ![模型检测设置页](docs/preview.png)
 
@@ -13,13 +13,15 @@
 
 ## 定位
 
-为任意 **pi-ai 提供方**检测其线上最新模型，并用 **models.dev** 自动富化正确元数据（模态 `text/image`、上下文容量、输出上限、推理能力）后写回该提供方。入口：**设置 → 模型检测**。
+为任意 **pi-ai 提供方**（以及 **DeepSeek 官方 API** 路由 `deepseek-official`）检测其线上最新模型，用 **models.dev** 自动富化正确元数据（模态 `text/image`、上下文容量、输出上限、推理能力）后写回，并提供**手动编辑现有模型参数**的能力。入口：**设置 → 模型检测**。
 
 ## 特性
 
 - **实时拉取**：直接打提供方 `/models`，拿到线上最新模型 id，无视模板目录的滞后。
 - **能力自动富化**：以 **models.dev** 为唯一权威能力源（上下文 / 输出 / 模态 / 推理），跨提供方回退，聚合网关亦可命中。
-- **思考档位按模型富化**：从 models.dev `reasoning_options` 读取每个模型自己的推理等级（如 Muse Spark → Minimal/Low/Medium/High/Xhigh、Qwen3.8 Flash → Low/Medium/Xhigh、Kimi K3 → Max），翻译成 DSH 的 `reasoningEfforts` 写回，让第三方模型在 DSH 中可设置思考强度。**绝不套用统一档位**；纯开关/无档位模型不写，交给 pi-ai 目录兜底。
+- **双命名空间写入**：自动识别提供方属于 `llm-pi-ai`（pi-ai 适配器）还是 `llm-deepseek`（DeepSeek 官方 API 内置适配器），按各自 schema 写入正确字段（`input` vs `inputModalities`）。
+- **手动编辑现有模型**：逐条改参数——是否支持多模态、上下文、输出上限、思考档位、`compat`；也可手填模型号新增。**手填的模型号默认没有模态声明**，在这里勾上「图像」即可让适配器接受图片。
+- **思考档位按模型富化**：从 models.dev `reasoning_options` 读取每个模型自己的推理等级（如 Muse Spark → Minimal/Low/Medium/High/Xhigh、Qwen3.8 Flash → Low/Medium/Xhigh、Kimi K3 → Max），翻译成 DSH 的 `reasoningEfforts` 写回，让第三方模型在 DSH 中可设置思考强度。**绝不套用统一档位**；纯开关/无档位模型不写，交给 pi-ai 目录兜底。DeepSeek 官方适配器的档位是**路由级**（off/low/high/max），插件在编辑页提供统一开关。
 - **四级优先级**：当前提供方 models.dev → 全局 models.dev → 内置 manifest（薄覆盖）→ 保守默认。
 - **卡片式交互**：分页 + 搜索防抖 + 勾选应用，海量模型不卡顿；每张卡清晰标注数据来源与推理档位。
 - **来源透明**：区分「查得到」与「默认兜底」，models.dev 未收录时给出提示，不把默认当查得。
@@ -41,6 +43,8 @@ models.dev（自动、社区维护的模态/容量/推理/思考档位）—— 
 ```
 
 **模态归一化**：models.dev 可能标注 `video/pdf/audio`，而 DSH 只支持 `text/image`，插件归一为——含 `image` → `[text, image]`，否则 `[text]`。
+
+**名字级匹配（关键修复）**：同一系列常有纯文本与多模态两条线（`deepseek-v4-flash` vs `deepseek-v4-flash-vision-exp`）。归一化会剥掉尾部版本/日期/`-expires-on-0910` 之类的噪声段，因此手填的内测模型号 `deepseek-v4.1-flash-expires-on-0910` 与两者都「版本级等效」——**取第一个命中会落到纯文本条目**。插件改为在等效候选里**优先能力更丰富者（含 image）**，精确同名命中仍永远优先。另有家族级兜底：清单里完全没有该模型号时，若同族条目声明了 image 则继承模态。
 
 **思考档位 → DSH reasoningEfforts**：DSH 对模型的思考强度由 profile 层的 `reasoningEfforts`（档位 → wire 值）驱动，菜单只显示适配器公布的档位。插件从 models.dev `reasoning_options` 读取每个模型声明的档位（wire 值 = 档位名，`none` → `off`），manifest 的人工 `thinkingLevelMap` 优先（如 deepseek 的 `{high, max}` + `compat.thinkingFormat: deepseek`）。只有档位声明（非纯开关）才写，且只保留 pi-ai 词汇表（off/minimal/low/medium/high/xhigh/max）内的档位，避免 DSH 校验拒绝整个提供方。
 
@@ -66,13 +70,33 @@ dsh plugin --profile web add npm:dsh-model-detector
 
 ## 使用
 
+### 模式一：发现新模型
+
 1. 打开 **设置 → 模型检测**。
-2. **选择提供方**（下拉列出你已配置的所有 pi-ai 提供方，如 `opencode-go`、`tokenrhythm`、`volcengine`）。
+2. **选择提供方**（下拉列出你已配置的所有提供方，含 `deepseek-official`（官方 API）与各 pi-ai 路由如 `opencode-go`、`volcengine`）。
 3. 点「**获取最新模型**」——插件拉取该提供方 `/models`，用 models.dev 富化模态 / 容量 / 推理。
 4. 在分页列表里**搜索或勾选**想要保留的模型（`vision`、`kimi`、`image` 等关键词可快速定位）。
-5. 点「**应用所选**」——把富化后的模型写进该提供方的 `models` 列表（自动补齐缺失的 `api` / `baseURL`，使提供方自足）。
+5. 点「**应用所选**」——把富化后的模型写进该提供方（pi-ai 写 `llm-pi-ai.providers.<route>.models`；DeepSeek 官方写 `llm-deepseek.models`）。
 
-> 说明：插件会解析提供方的 `apiKeyEnv` 凭据去请求 `/models`（如 `volcengine` 需带 key，否则 401）。线上拉取失败时**只回退** models.dev / 内置清单，**绝不用该提供方的旧配置兜底**（本插件的目的是拿"线上"信息）。
+> 说明：插件会解析提供方的 `apiKeyEnv` 凭据去请求 `/models`（DeepSeek 官方路由默认 `DEEPSEEK_API_KEY`；线上拉取失败时**只回退** models.dev / 内置清单，**绝不用该提供方的旧配置兜底**（本插件的目的是拿"线上"信息）。
+
+### 模式二：编辑现有模型参数（多模态 / 思考档位）
+
+切到「**编辑现有模型**」→ 点「**读取现有模型**」，列出该提供方**现有**模型（profile 已配置的 + 适配器默认目录的），每条可改：
+
+| 字段 | 说明 |
+|---|---|
+| 展示名 / 上下文 / 输出上限 | 直接填数字 |
+| **输入模态**（文本 / 图像） | **手填的模型号默认纯文本**——勾上「图像」适配器才接受图片 |
+| 思考档位（pi-ai） | 逐档开关 + wire 值（`off` 表示不传参数） |
+| `compat`（pi-ai，高级） | JSON 编辑，如 `{"thinkingFormat":"deepseek"}` |
+| 推理档位 / thinking（DeepSeek 官方） | 路由级设置，所有模型共用 |
+
+- 「**采纳建议**」按钮用 models.dev / 清单的建议值回填。
+- 顶部输入框可**手填任意模型号**新增（例如内测模型 `deepseek-v4.1-flash-expires-on-0910`）。
+- 保存只改这一条：pi-ai 目录路由在无 `models` 列表时写 `modelOverrides`（只覆盖该模型，目录其余照常服务）；否则就地更新 `models` 条目。其余字段与其它提供方配置原样保留。
+
+> **典型场景**：`deepseek-v4.1-flash-expires-on-0910` 是内测模型，官方 `GET /models` 与 models.dev 都未收录，只能在界面手填模型号——此时适配器看不到 `inputModalities`，图片一律被拒（`UNSUPPORTED_CONTENT`）。用本插件「编辑现有模型」勾上「图像」保存即可；插件清单也已内置该模型号（模态按同族推断为 text+image），点「获取最新模型」时若线上返回它也会自动带上模态。
 
 ## 性能特性
 
@@ -86,13 +110,29 @@ dsh plugin --profile web add npm:dsh-model-detector
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| `GET` | `/providers` | 列出已配置的 pi-ai 提供方（route/displayName/api/baseURL/模型数） |
-| `POST` | `/discover` | 拉取该提供方 `/models` + models.dev 富化 → 返回富化模型列表 |
-| `POST` | `/apply` | 把所选模型写入 `llm-pi-ai.providers.<route>.models` |
+| `GET` | `/providers` | 列出可检测提供方（route/displayName/api/baseURL/模型数/`ns`） |
+| `POST` | `/discover` | 拉取该提供方 `/models` + models.dev 富化 → 统一形状模型列表 |
+| `POST` | `/current` | 列出该提供方**现有**模型（profile + 适配器目录）+ models.dev/清单建议值 |
+| `POST` | `/save-model` | 写入单条模型参数（保留其它字段；自动选 `models` / `modelOverrides`） |
+| `POST` | `/remove-model` | 删除单条模型（`models` 条目或 `modelOverrides` 条目） |
+| `POST` | `/route-settings` | 写入 DeepSeek 官方路由级设置（`reasoningEffort` / `thinking`） |
+| `POST` | `/apply` | 批量把所选模型写入该提供方 |
 
-`/discover` 响应还带诊断字段：`modelsDevLoaded` / `modelsDevProviders` / `modelsDevError` / `providerInModelsDev` / `sourceCounts`，便于区分来源，避免把「默认」误当「查得」。
+`/discover` 响应还带诊断字段：`modelsDevLoaded` / `modelsDevProviders` / `modelsDevError` / `providerInModelsDev` / `sourceCounts`，以及 `ns` / `target`（写入目标），便于区分来源，避免把「默认」误当「查得」。
 
 此外提供一个只读 agent 工具 `_dsh_model_detector_status`（查询各提供方概览）。
+
+## 两套模型 schema（写入目标）
+
+| | `llm-pi-ai`（pi-ai 适配器） | `llm-deepseek`（DeepSeek 官方 API） |
+|---|---|---|
+| 路由 | 任意，如 `opencode-go`、`deepseek` | `deepseek-official` |
+| 模型字段 | `id/name/contextWindow/maxTokens/input/reasoningEfforts/compat` | `id/name/description/contextWindow/maxTokens/inputModalities/imagePixelBudget/imageMaxBytes` |
+| 模态键 | `input: ['text','image']` | `inputModalities: ['text','image']`（`min(1)`，空数组非法） |
+| 推理档位 | **模型级** `reasoningEfforts` | **路由级** `reasoningEffort`（off/low/high/max） |
+| 目录覆盖 | `modelOverrides[id]`（无 `models` 列表时） | 无（只能写 `models` 列表） |
+
+> DeepSeek 官方适配器在收到图片时硬判定 `models.find(id)?.inputModalities?.includes('image') !== true` → 抛 `UNSUPPORTED_CONTENT`。**没写 `inputModalities` 就等于纯文本**——这是"手填模型号不支持多模态"的根因。
 
 ## 配置
 
@@ -114,11 +154,11 @@ dsh plugin --profile web add npm:dsh-model-detector
 ├── docs/preview.png    设置页效果图
 ├── lib/                构建产物（host lib/index.js + client lib/client.js）
 ├── src/
-│   ├── index.ts        host 入口：webServer API + 状态工具
-│   ├── api.ts          host 业务：发现合并（models.dev/清单/默认 + source 判定）+ 应用写入
-│   ├── manifest.ts     内置薄覆盖清单（可扩展任意提供方）
-│   └── client/         React 设置页（DSH 设计语言）+ 样式
-└── scripts/build.sh    host tsc 构建（DSH_CHECKOUT）
+│   ├── index.ts        host 入口：webServer API（7 个接口）+ 状态工具
+│   ├── api.ts          host 业务：命名空间解析 / 发现合并 / 双 schema 写入 / 手动编辑
+│   ├── manifest.ts     内置薄覆盖清单 + DeepSeek 官方目录（可扩展任意提供方）
+│   └── client/         React 设置页（发现 / 编辑两种模式，DSH 设计语言）+ 样式
+└── scripts/build.mjs   跨平台构建/类型检查（自动探测 tsc，无需 bash/本地 TypeScript）
 ```
 
 ## 许可证

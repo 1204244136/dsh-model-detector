@@ -1,6 +1,13 @@
 /**
  * dsh-model-detector — 设置页形态（dev_scaffold_plugin 生成，改造）。
- * host 侧：webServer API（/api/providers、/api/discover、/api/apply）。
+ * host 侧：webServer API
+ *   GET  /api/providers      已配置提供方（含命名空间/目标）
+ *   POST /api/discover       线上 GET /models + models.dev 富化（统一形状）
+ *   POST /api/current        列出某提供方现有模型（可手动编辑）+ 建议值
+ *   POST /api/save-model     写入单条模型参数（保留其它字段）
+ *   POST /api/remove-model   删除单条模型
+ *   POST /api/route-settings 写入路由级设置（DeepSeek 推理档位 / thinking 开关）
+ *   POST /api/apply          批量写入发现结果
  * client 侧：settings.section 设置页（React）。
  */
 import type { Context } from 'cordis'
@@ -8,7 +15,9 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from 'schemastery'
 import {
   listConfiguredProviders, readJsonBody, subPath, fetchLiveModels, mergeDiscovered,
-  loadModelsDev, modelsDevStatus, applyModels, readProviders, type HostCtx,
+  loadModelsDev, modelsDevStatus, applyModels, readProviders, currentModels, writeModel,
+  removeModel, writeRouteReasoning, resolveTarget, toTargetModel, routeReasoningLevels,
+  type HostCtx,
 } from './api.js'
 import { manifestProvider } from './manifest.js'
 
@@ -47,19 +56,25 @@ export function apply(ctx: Context, config: Config): void {
         if (req.method === 'GET' && path === 'providers') {
           return json(res, 200, { ok: true, providers: listConfiguredProviders(st) })
         }
+
+        // ── 发现：线上 GET /models + models.dev/清单富化（统一形状）───────────
         if (req.method === 'POST' && path === 'discover') {
           const body = (await readJsonBody(req)) as any
           const route = typeof body?.route === 'string' ? body.route : ''
           if (!route) return json(res, 400, { ok: false, error: '缺少 route' })
-          const p = readProviders(st)[route] as any
+          const target = resolveTarget(route, st)
+          const p = target?.profile
           const mp = manifestProvider(route)
-          const baseURL = typeof body?.baseURL === 'string' ? body.baseURL : (p?.baseURL || mp?.baseURL || '')
-          // apiKey：优先请求体；否则解析 provider.apiKeyEnv 的凭据
+          const baseURL = typeof body?.baseURL === 'string' && body.baseURL
+            ? body.baseURL
+            : (target?.baseURL || p?.baseURL || mp?.baseURL || '')
+          // apiKey：优先请求体；否则解析凭据服务里的 apiKeyEnv
           let apiKey = typeof body?.apiKey === 'string' ? body.apiKey : ''
           if (!apiKey) {
+            const env = (typeof p?.apiKeyEnv === 'string' && p.apiKeyEnv) || target?.apiKeyEnv || ''
             const creds = host.get('credentials') as any
-            if (creds && typeof creds.resolve === 'function' && p?.apiKeyEnv) {
-              try { const hit = await creds.resolve(p.apiKeyEnv); if (hit?.value) apiKey = hit.value } catch { /* 忽略 */ }
+            if (env && creds && typeof creds.resolve === 'function') {
+              try { const hit = await creds.resolve(env); if (hit?.value) apiKey = hit.value } catch { /* 忽略 */ }
             }
           }
           if (!baseURL) return json(res, 400, { ok: false, error: '缺少 baseURL' })
@@ -81,11 +96,15 @@ export function apply(ctx: Context, config: Config): void {
             }
             return counts
           }
+          /** 统一发现形状 → 目标命名空间的模型形状（deepseek 用 inputModalities）。 */
+          const shape = (list: Array<Record<string, unknown>>) =>
+            target ? list.map((m) => toTargetModel(target.ns, m)) : list
           try {
             const liveIds = await fetchLiveModels(baseURL, apiKey)
             const merged = mergeDiscovered(route, liveIds.map((x: { id: string }) => x.id), defaults, modelsDev)
             return json(res, 200, {
-              ok: true, models: merged, source: 'live+models.dev', fromManifestOnly: false,
+              ok: true, models: shape(merged), raw: merged, source: 'live+models.dev', fromManifestOnly: false,
+              route, ns: target?.ns ?? 'llm-pi-ai', target: target?.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
               modelsDevLoaded: mdDiag.loaded, modelsDevProviders: mdDiag.providers,
               modelsDevError: mdDiag.error, providerInModelsDev: !!modelsDev?.[route],
               sourceCounts: sourceCounts(merged),
@@ -101,14 +120,91 @@ export function apply(ctx: Context, config: Config): void {
               : String(e?.message ?? e)
             const fallbackMerged = mergeDiscovered(route, ids, defaults, modelsDev)
             return json(res, 200, {
-              ok: true, models: fallbackMerged,
+              ok: true, models: shape(fallbackMerged), raw: fallbackMerged,
               source: 'fallback', fromManifestOnly: ids.length > 0, warn: catalogWarn,
+              route, ns: target?.ns ?? 'llm-pi-ai', target: target?.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
               modelsDevLoaded: mdDiag.loaded, modelsDevProviders: mdDiag.providers,
               modelsDevError: mdDiag.error, providerInModelsDev: !!modelsDev?.[route],
               sourceCounts: sourceCounts(fallbackMerged),
             })
           }
         }
+
+        // ── 现有模型（手动编辑）──────────────────────────────────────────────
+        if (req.method === 'POST' && path === 'current') {
+          const body = (await readJsonBody(req)) as any
+          const route = typeof body?.route === 'string' ? body.route : ''
+          if (!route) return json(res, 400, { ok: false, error: '缺少 route' })
+          const modelsDev = await loadModelsDev()
+          const r = await currentModels(st, route, modelsDev)
+          if (r.target === undefined) return json(res, 400, { ok: false, error: `未找到提供方 ${route}` })
+          return json(res, 200, {
+            ok: true,
+            route,
+            ns: r.target.ns,
+            target: r.target.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
+            hasModelsList: r.target.hasModelsList,
+            baseURL: r.target.baseURL,
+            apiKeyEnv: r.target.apiKeyEnv,
+            reasoningLevels: routeReasoningLevels(r.target.ns),
+            ...(r.reasoningEffort !== undefined ? { reasoningEffort: r.reasoningEffort, thinking: r.thinking } : {}),
+            models: r.models,
+            writable: st?.writable !== false,
+          })
+        }
+
+        // ── 写入单条模型参数 ────────────────────────────────────────────────
+        if (req.method === 'POST' && path === 'save-model') {
+          const body = (await readJsonBody(req)) as any
+          const route = typeof body?.route === 'string' ? body.route : ''
+          const model = body?.model
+          if (!route) return json(res, 400, { ok: false, error: '缺少 route' })
+          if (!model || typeof model !== 'object' || Array.isArray(model)) return json(res, 400, { ok: false, error: 'model 必须是对象' })
+          if (st === undefined) return json(res, 400, { ok: false, error: 'settings 服务不可用' })
+          if (st.writable === false) return json(res, 400, { ok: false, error: '设置只读' })
+          try {
+            const r = await writeModel(st, route, model as Record<string, unknown>)
+            return json(res, 200, { ok: true, route, ns: r.ns, key: r.key, id: (model as any).id })
+          } catch (e: any) {
+            return json(res, 400, { ok: false, error: String(e?.message ?? e) })
+          }
+        }
+
+        // ── 删除单条模型 ────────────────────────────────────────────────────
+        if (req.method === 'POST' && path === 'remove-model') {
+          const body = (await readJsonBody(req)) as any
+          const route = typeof body?.route === 'string' ? body.route : ''
+          const id = typeof body?.id === 'string' ? body.id : ''
+          if (!route || !id) return json(res, 400, { ok: false, error: '缺少 route 或 id' })
+          if (st === undefined) return json(res, 400, { ok: false, error: 'settings 服务不可用' })
+          if (st.writable === false) return json(res, 400, { ok: false, error: '设置只读' })
+          try {
+            const r = await removeModel(st, route, id)
+            return json(res, 200, { ok: true, route, id, removed: r.removed, from: r.from })
+          } catch (e: any) {
+            return json(res, 400, { ok: false, error: String(e?.message ?? e) })
+          }
+        }
+
+        // ── 路由级设置（DeepSeek 推理档位 / thinking 开关）──────────────────
+        if (req.method === 'POST' && path === 'route-settings') {
+          const body = (await readJsonBody(req)) as any
+          const route = typeof body?.route === 'string' ? body.route : ''
+          if (!route) return json(res, 400, { ok: false, error: '缺少 route' })
+          if (st === undefined) return json(res, 400, { ok: false, error: 'settings 服务不可用' })
+          if (st.writable === false) return json(res, 400, { ok: false, error: '设置只读' })
+          try {
+            await writeRouteReasoning(st, route, {
+              ...(typeof body?.reasoningEffort === 'string' ? { reasoningEffort: body.reasoningEffort } : {}),
+              ...(typeof body?.thinking === 'string' ? { thinking: body.thinking } : {}),
+            })
+            return json(res, 200, { ok: true, route })
+          } catch (e: any) {
+            return json(res, 400, { ok: false, error: String(e?.message ?? e) })
+          }
+        }
+
+        // ── 批量应用（发现结果）─────────────────────────────────────────────
         if (req.method === 'POST' && path === 'apply') {
           const body = (await readJsonBody(req)) as any
           const route = typeof body?.route === 'string' ? body.route : ''
@@ -116,8 +212,12 @@ export function apply(ctx: Context, config: Config): void {
           if (!Array.isArray(body?.models)) return json(res, 400, { ok: false, error: 'models 必须是数组' })
           if (st === undefined) return json(res, 400, { ok: false, error: 'settings 服务不可用' })
           if (st.writable === false) return json(res, 400, { ok: false, error: '设置只读' })
-          await applyModels(st, route, body.models)
-          return json(res, 200, { ok: true, route, count: body.models.length })
+          try {
+            const r = await applyModels(st, route, body.models)
+            return json(res, 200, { ok: true, route, ns: r.ns, count: r.count })
+          } catch (e: any) {
+            return json(res, 400, { ok: false, error: String(e?.message ?? e) })
+          }
         }
         return json(res, 404, { ok: false, error: `未知接口 /${path}` })
       } catch (e: any) {
