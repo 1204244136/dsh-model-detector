@@ -94,13 +94,32 @@
 │   └── client/         React 设置页（Page.tsx / styles.ts / react.ts / index.ts），发现 + 编辑两模式
 ├── scripts/build.mjs   跨平台构建/类型检查（自动探测 tsc，无需 bash/本地 TypeScript）
 ├── scripts/verify.mjs  host 回归测试（npm run verify，假 settings 驱动 lib/）
-├── scripts/preview.mjs 布局预览（真实 CSS + 同构 DOM → .preview/layout.html；FRAME_WIDTH 调宽）
+├── scripts/preview.mjs 布局预览（真实 CSS + 同构 DOM → .preview/layout-<mode>-<theme>.html；FRAME_WIDTH/MODE/THEME 可调）
 └── scripts/build.sh    junction 依赖链接 + host tsc 构建（参考，build.mjs 的可选补充）
 ```
 
 > 改前端布局后跑 `node scripts/preview.mjs`，再用无头浏览器截图自查
 > （`msedge --headless --screenshot=out.png file:///.../layout.html`）；`FRAME_WIDTH=430` 可验证窄面板不重叠，
-> `MODE=discover` 可看发现模式（两个按钮，最挤的一档）。`.preview/` 已 gitignore。
+> `MODE=discover` 可看发现模式（两个按钮，最挤的一档），`THEME=dark` 出深色主题预览
+> （脚本把 DSH checkout 的 `design-platform.css`/`base.css` 真实 token 内联，并给 `<body>` 加
+> `data-ds-dark-theme`）。**改颜色必须两套主题各截一次图**。`.preview/` 已 gitignore。
+>
+> **主题/token 硬约束（深色适配踩过）**：
+> 1. **只写 `var(--dsw-*)` + `color-mix()`，不写亮色字面量**。写了 `var(--token, #1f2328)` 这种 fallback，
+>    token 名一旦拼错（例如并不存在的 `--dsw-alias-text-primary`）深色主题下就会静默渲染成近黑色文字，
+>    在深色卡片上几乎不可见——整个"深色没适配"就是这么来的。DSH 官方设置页 CSS 顶部有同款告诫。
+> 2. **`--dsw-alias-brand-primary` 是高对比前景色（亮≈近黑/深≈近白），不是蓝色**。蓝色强调用
+>    `--dsw-alias-state-business-primary`（亮 deepseek-500 / 深 deepseek-400）；各状态"淡底"用
+>    `--dsw-alias-{state-warn,state-success,state-business}-tertiary`，红色淡底用
+>    `--dsw-alias-interactive-bg-hover-danger`，实心浅底用 `--dsw-alias-interactive-bg-hover-solid`。
+> 3. **禁止 `var(--x)22` 这类拼接**：token 值可能是 `rgb(...)`，拼出来是非法的 `rgb(15, 17, 21)22`，
+>    整条声明失效（`mc-chip-effort` 曾因此完全没有背景）。要半透明一律 `color-mix(in srgb, var(--x) 16%, transparent)`。
+> 4. **原生控件靠 `color-scheme` 跟随主题**：`.mc-root` 写 `color-scheme: light`，
+>    `body[data-ds-dark-theme] .mc-root` 写 `color-scheme: dark`——否则深色下 `<select>` 弹层会拿
+>    深色底 + 亮色方案的文字色（option 不可读）、勾选框也停在亮色。**不要**用
+>    `@media (prefers-color-scheme: dark)` 代替：DSH 的主题是 JS 切的，与系统偏好未必一致。
+> 5. 绿底强调按钮（`.mc-btnAccent`）文字固定用 `--dsw-static-neutral-bluish-1000`：
+>    绿色 500 明度居中，两套主题都配深色文字才够对比，`label-primary-foreground` 会随主题翻色。
 >
 > **布局硬约束（踩过）**：`.mc-row` 必须 `flex-wrap: wrap`，字段组 `.mc-field` 用 `flex: 0 1 auto`
 > 且 `.mc-fieldLabel` 用 `flex: none`——否则窄面板下两个 `select` 会**重叠**（截图里踩过）。
