@@ -132,9 +132,13 @@ eq('同步掉 model-a 后 → 2', D.countDirty(asModels(afterSave), synced, TARG
 const searched = asModels(afterSave).filter((m) => m.id === 'model-b')
 eq('搜索只显示 1 行时，提示仍是全部未保存数（2）而不是 1', D.countDirty(asModels(afterSave), synced, TARGET), 2)
 eq('（对照）若按过滤后统计就会少报', D.countDirty(searched, synced, TARGET), 1)
-// 手填条目也要算进去（它在 drafts 里、不在服务端列表里）
-const withManual = { ...synced, 'manual-x': D.toDraft('manual-x', {}, TARGET) }
-eq('手填条目计入未保存数', D.countDirty(asModels(afterSave), withManual, TARGET), 3)
+// 手填条目也要算进去（对应 Page.tsx 里 allEditModels 会把 extra 草稿补入模型列表）
+const withManualDrafts = { ...synced, 'manual-x': D.toDraft('manual-x', {}, TARGET) }
+const allModelsWithManual = [
+  ...asModels(afterSave),
+  { id: 'manual-x', current: {}, suggested: {}, suggestedSource: '', configured: false, draftOnly: true },
+]
+eq('手填条目计入未保存数', D.countDirty(allModelsWithManual, withManualDrafts, TARGET), 3)
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail === 0 ? 0 : 1)
