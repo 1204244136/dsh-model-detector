@@ -238,6 +238,24 @@ const shaped = merged.map((m) => M.toTargetModel('llm-deepseek', m)).find((m) =>
 eq('deepseek 形状用 inputModalities', shaped?.inputModalities, ['text', 'image'])
 ok('deepseek 形状不含 input / reasoningEfforts', shaped.input === undefined && shaped.reasoningEfforts === undefined)
 ok('pi-ai 形状保留 reasoningEfforts', M.toTargetModel('llm-pi-ai', { id: 'x', input: ['text'], reasoningEfforts: { max: 'max' } }).reasoningEfforts?.max === 'max')
+// ⚠️ /discover 返回给前端的 `models` 就是 toTargetModel 的输出（index.ts 的 shape()）。
+// 纯展示字段（source 来源徽标 / note 内测 / credits 计费）若在这里被过滤掉，界面就永远不显示
+// —— 真的漏过：数据一直躺在 raw 里，而前端读的是 models，于是徽标从未出现过。
+const dispShape = M.toTargetModel('llm-pi-ai', { id: 'x', name: 'X', source: 'provider', note: '内测模型', credits: 'x0.03', reasoning: true, input: ['text'] })
+eq('展示字段穿过 toTargetModel：source', dispShape.source, 'provider')
+eq('展示字段穿过 toTargetModel：note', dispShape.note, '内测模型')
+eq('展示字段穿过 toTargetModel：credits', dispShape.credits, 'x0.03')
+ok('展示字段穿过 toTargetModel：reasoning', dispShape.reasoning === true)
+// 端到端：真实出口链路（mergeDiscovered → toTargetModel）之后 credits 仍在
+const e2eDisp = M.toTargetModel('llm-pi-ai', M.mergeDiscovered('wb', [{ id: 'global:primary-model', contextWindow: 272000, maxTokens: 72000, credits: 'x3.31' }], { baseURL: 'x' }, {})[0])
+eq('真实链路后 credits 仍在（发现页才显示得出来）', e2eDisp.credits, 'x3.31')
+// 但写入时仍必须被丢掉（白名单）
+const e2eSt = makeSettings({ 'llm-pi-ai': { providers: { wb: { api: 'openai-completions', baseURL: 'http://127.0.0.1:7863/v1', models: [] } } } })
+await M.applyModels(e2eSt, 'wb', [e2eDisp])
+const e2eSaved = e2eSt._doc['llm-pi-ai'].providers.wb.models[0]
+ok('写入时展示字段被白名单丢弃（credits/note/source 都不落盘）',
+  e2eSaved.credits === undefined && e2eSaved.note === undefined && e2eSaved.source === undefined,
+  JSON.stringify(e2eSaved))
 
 const modelsDev = await M.loadModelsDev()
 const mdStatus = M.modelsDevStatus()

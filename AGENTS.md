@@ -41,6 +41,10 @@
   mergeDiscovered(route, live, defaults, modelsDev)
     # 逐字段优先级：线上声明 → 本路由 models.dev → 清单 upstream 厂商 → 全局 models.dev → manifest → 家族推断 → 默认(text+262144/32768)
   toTargetModel(ns, m)  # 统一形状 → pi-ai(input) / deepseek(inputModalities)
+  // ⚠️ 这一步的输出就是前端收到的 `models`（index.ts 的 shape()）。纯展示字段
+  // （source 来源徽标 / note 内测 / credits 计费）**必须一并带上**，否则界面里那些徽标
+  // 永远不显示，而数据其实一直躺在 `raw` 里（真的踩过：source 与 credits 都漏过）。
+  // 它们不会落盘 —— apply 走 cleanForTarget 的字段白名单，verify.mjs 有用例守着。
   // 线上失败只回退 models.dev/manifest，绝不回退该提供方旧配置；
   // 回退拿不到任何 id（该路由既不在 models.dev、也不在清单）时返回 0 条 + warn（前端必须显示原因）
 

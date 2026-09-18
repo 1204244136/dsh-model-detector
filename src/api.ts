@@ -892,8 +892,20 @@ export function cleanForTarget(ns: Namespace, m: unknown, withId = true): Record
 /**
  * 把「统一发现结果」（id/name/contextWindow/maxTokens/input/reasoningEfforts/source）
  * 转换成目标命名空间能接受的模型对象。
+ *
+ * ⚠️ 这个函数的输出就是 `/discover` 返回给前端的 `models`（`index.ts` 里的 `shape()`），
+ * 所以**纯展示字段也必须带上**（`source` 来源徽标 / `note` 内测标记 / `credits` 计费倍率）——
+ * 漏掉它们的表现是"界面里那个徽标/字段永远不显示"，且极难察觉（数据其实一直在 `raw` 里）。
+ * 这些字段**不会**被写进配置：`apply` 走 {@link cleanForTarget} 的字段白名单。
  */
 export function toTargetModel(ns: Namespace, m: Record<string, unknown>): Record<string, unknown> {
+  // 纯展示字段：前端要用，写入时被 cleanForTarget 白名单丢弃
+  const display = {
+    ...(m.source ? { source: m.source } : {}),
+    ...(m.note ? { note: m.note } : {}),
+    ...(m.credits ? { credits: m.credits } : {}),
+    ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+  }
   if (ns === 'llm-deepseek') {
     return {
       id: m.id,
@@ -901,6 +913,7 @@ export function toTargetModel(ns: Namespace, m: Record<string, unknown>): Record
       ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
       ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
       ...(Array.isArray(m.input) ? { inputModalities: [...m.input] } : {}),
+      ...display,
     }
   }
   return {
@@ -911,6 +924,7 @@ export function toTargetModel(ns: Namespace, m: Record<string, unknown>): Record
     ...(Array.isArray(m.input) ? { input: [...m.input] } : {}),
     ...(m.reasoningEfforts ? { reasoningEfforts: m.reasoningEfforts } : {}),
     ...(m.compat ? { compat: m.compat } : {}),
+    ...display,
   }
 }
 
