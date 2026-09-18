@@ -66,6 +66,8 @@ interface DiscoveredModel {
   reasoningEfforts?: Record<string, string | null>
   /** 来源：线上声明 / models.dev / 内置清单 / 保守默认（未查到）。 */
   source?: 'provider' | 'models-dev' | 'manifest' | 'default'
+  /** 端点的计费/额度标注（如 `x0.03`；`x0.00` = 免费）——纯展示，不写配置。 */
+  credits?: string
 }
 
 interface EditableModel {
@@ -612,6 +614,12 @@ export function ModelCatalogPage(): React.ReactElement {
                       <div className="mc-entryMeta">
                         {input.map((x) => <span key={x} className="mc-chip">{MODALITY[x]}</span>)}
                         {formatEfforts(m.reasoningEfforts) && <span className="mc-chip mc-chip-effort">推理 {formatEfforts(m.reasoningEfforts)}</span>}
+                        {m.credits && (
+                          <span
+                            className={`mc-chip ${m.credits === 'x0.00' ? 'mc-chip-free' : 'mc-chip-credit'}`}
+                            title="提供方声明的计费倍率（x0.00 = 免费）；仅展示，不会写入配置"
+                          >计费 {m.credits}</span>
+                        )}
                         <span className="mc-metaItem">上下文 <b>{fmt(m.contextWindow)}</b></span>
                         <span className="mc-metaItem">输出 <b>{fmt(m.maxTokens)}</b></span>
                       </div>

@@ -140,6 +140,7 @@ ${MODE === 'discover' ? `
         <div class="mc-entryName"><span class="mc-lineTag">收录名</span><span class="mc-name">DeepSeek V4.1 Flash (内测, 2026-09-10 到期)</span></div>
         <div class="mc-entryMeta">
           <span class="mc-chip">文本</span><span class="mc-chip">图像</span>
+          <span class="mc-chip mc-chip-free">计费 x0.00</span>
           <span class="mc-metaItem">上下文 <b>1,000,000</b></span>
           <span class="mc-metaItem">输出 <b>384,000</b></span>
         </div>
@@ -154,6 +155,7 @@ ${MODE === 'discover' ? `
         <div class="mc-entryName"><span class="mc-lineTag">收录名</span><span class="mc-name">DeepSeek V4 Pro</span></div>
         <div class="mc-entryMeta">
           <span class="mc-chip">文本</span><span class="mc-chip mc-chip-effort">推理 High / Max</span>
+          <span class="mc-chip mc-chip-credit">计费 x0.03</span>
           <span class="mc-metaItem">上下文 <b>1,000,000</b></span>
           <span class="mc-metaItem">输出 <b>384,000</b></span>
         </div>

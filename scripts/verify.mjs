@@ -217,6 +217,22 @@ hangSrv.close()
 ok('挂住的端点会超时而不是一直等', hangMs < 3000, `${hangMs}ms`)
 ok('超时错误信息可读', hangMsg.includes('超时'), hangMsg)
 
+console.log('\n②f 端点计费标注（credits）：只在发现页展示，绝不写进配置')
+eq('字符串 credits 原样保留', M.declaredFromRaw({ id: 'x', credits: 'x0.03' }).credits, 'x0.03')
+eq('数字 credits 补 x 前缀', M.declaredFromRaw({ id: 'x', credits: 0.05 }).credits, 'x0.05')
+// 实测同一端点混用两种写法：`x0.21` 与 `x0.34 credits` —— 归一化后才不会显示成两种样式
+eq('带 credits 后缀的写法被归一', M.declaredFromRaw({ id: 'x', credits: 'x0.34 credits' }).credits, 'x0.34')
+eq('纯数字字符串也补 x 前缀', M.declaredFromRaw({ id: 'x', credits: '0.5' }).credits, 'x0.5')
+ok('无 credits 时不伪造字段', M.declaredFromRaw({ id: 'x' }).credits === undefined)
+const cred = M.mergeDiscovered('wb', [{ id: 'cn:hy4-preview-f', contextWindow: 1000000, maxTokens: 64000, credits: 'x0.00' }], { baseURL: 'x' }, {})[0]
+eq('发现结果带上 credits（供 UI 展示）', cred.credits, 'x0.00')
+// 关键：apply 走 cleanForTarget 白名单，credits 必须被丢弃（DSH schema 不认这个字段）
+const credSt = makeSettings({ 'llm-pi-ai': { providers: { wb: { api: 'openai-completions', baseURL: 'http://127.0.0.1:7863/v1', models: [] } } } })
+await M.applyModels(credSt, 'wb', [cred])
+const credSaved = credSt._doc['llm-pi-ai'].providers.wb.models[0]
+ok('credits 不会写进 pi-ai 配置', credSaved.credits === undefined, JSON.stringify(credSaved))
+ok('其它字段正常写入', credSaved.contextWindow === 1000000 && credSaved.maxTokens === 64000)
+
 console.log('\n③ 目标形状转换')
 const shaped = merged.map((m) => M.toTargetModel('llm-deepseek', m)).find((m) => m.id === 'deepseek-v4.1-flash-expires-on-0910')
 eq('deepseek 形状用 inputModalities', shaped?.inputModalities, ['text', 'image'])

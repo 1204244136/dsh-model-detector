@@ -337,6 +337,11 @@ export interface DeclaredModel {
   input?: Array<'text' | 'image'>
   reasoning?: boolean
   reasoningEfforts?: ReasoningEfforts
+  /**
+   * 端点的计费/额度标注（WorkBuddy 用 `credits: "x0.03"` 表示倍率，`x0.00` = 免费）。
+   * **仅供 UI 展示**，不写进 DSH 配置（`cleanForTarget` 的白名单会丢弃它）。
+   */
+  credits?: string
 }
 
 /** 从线上清单一条原始记录提取端点声明（各家字段名不同，按常见写法逐个取第一个有效值）。 */
@@ -373,6 +378,15 @@ export function declaredFromRaw(raw: any): DeclaredModel | undefined {
   if (Array.isArray(efforts)) out.reasoningEfforts = effortsFromLevels(efforts.map((v: unknown) => String(v)))
   const reasoning = bool('supports_reasoning', 'supportsReasoning')
   if (reasoning !== undefined) out.reasoning = reasoning
+  // 计费/额度标注：字符串原样（`x0.03`），数字则补 `x` 前缀（有些网关直接回 0.03）。
+  // 实测同一端点会混用两种写法（`"x0.21"` 与 `"x0.34 credits"`），统一成 `x<数字>` 再展示。
+  const credits = raw?.credits ?? raw?.credit_multiplier ?? raw?.creditMultiplier
+  if (typeof credits === 'string' && credits.trim()) {
+    const m = credits.trim().match(/^x?\s*([\d.]+)/i)
+    out.credits = m ? `x${m[1]}` : credits.trim()
+  } else if (typeof credits === 'number' && Number.isFinite(credits)) {
+    out.credits = `x${credits}`
+  }
   return out
 }
 
@@ -709,6 +723,8 @@ export function mergeDiscovered(
       id,
       name: (d.name || md?.name || mf?.name || id) as string,
       ...(mf?.note ? { note: mf.note } : {}),
+      // 端点计费标注：纯展示字段（写配置时被 cleanForTarget 白名单丢弃）
+      ...(d.credits ? { credits: d.credits } : {}),
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxTokens ? { maxTokens } : {}),
       input: [...input],

@@ -177,6 +177,9 @@ body[data-ds-dark-theme] .mc-root { color-scheme: dark; }
 .mc-chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; line-height: 18px; background: var(--dsw-alias-interactive-bg-hover-solid); color: var(--dsw-alias-label-secondary); }
 /* 推理档位 chip：区分于普通模态 chip，弱化强调但可辨识 */
 .mc-chip-effort { background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent); color: var(--dsw-alias-state-business-primary); }
+/* 计费倍率 chip（端点声明，仅展示）：免费用 success、付费用中性，都不抢主信息 */
+.mc-chip-credit { background: color-mix(in srgb, var(--dsw-alias-label-secondary) 14%, transparent); color: var(--dsw-alias-label-secondary); }
+.mc-chip-free { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent); color: var(--dsw-alias-state-success-primary); }
 
 /* ── source badge ── */
 .mc-src { display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 10px; font-size: 11px; line-height: 16px; }
