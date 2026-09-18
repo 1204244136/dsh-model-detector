@@ -86,6 +86,91 @@ const fam = M.mergeDiscovered('deepseek-official', ['deepseek-v4.9-flash-experim
 eq('同族推断继承图像模态', fam[0].input, ['text', 'image'])
 eq('无同族依据 → 保守纯文本', M.mergeDiscovered('bailian', ['totally-unknown'], { baseURL: 'x' }, {})[0].input, ['text'])
 
+console.log('\n②b 线上清单端点 + 档位后缀等效（antigravity 回归）')
+// Anthropic 协议路由的 baseURL 不能带 /v1（SDK 自己拼 /v1/messages），而这类代理的
+// 清单恰恰只在 /v1/models —— 只试 /models 会永远 404、发现拿不到任何 id。
+eq('候选端点含 /v1/models 兜底', M.liveModelsUrls('http://127.0.0.1:8045'), ['http://127.0.0.1:8045/models', 'http://127.0.0.1:8045/v1/models'])
+eq('baseURL 已带 /v1 时不重复拼', M.liveModelsUrls('https://opencode.ai/zen/go/v1/'), ['https://opencode.ai/zen/go/v1/models'])
+ok('档位后缀等效：-high / -low / -tiered', ['high', 'low', 'tiered'].every((s) => M.modelNameEquivalent(`gemini-3.8-flash-${s}`, 'gemini-3.8-flash')))
+ok('-thinking 等效（kimi-k2-thinking ↔ kimi-k2）', M.modelNameEquivalent('kimi-k2-thinking', 'kimi-k2'))
+ok('-max 不当作档位（避免 codex-max ↔ codex、qwen3.6-max ↔ qwen3.6 误命中）', !M.modelNameEquivalent('gpt-5.1-codex-max', 'gpt-5.1-codex') && !M.modelNameEquivalent('qwen3.6-max', 'qwen3.6'))
+ok('无关模型不误判', !M.modelNameEquivalent('gemini-3.8-flash', 'gemini-3.5-flash'))
+const mdFake = {
+  google: {
+    models: {
+      'gemini-3.8-flash': {
+        name: 'Gemini 3.8 Flash', reasoning: true,
+        reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+        modalities: { input: ['text', 'image', 'video', 'audio', 'pdf'] },
+        limit: { context: 1048576, output: 65536 },
+      },
+    },
+  },
+}
+const gw = M.mergeDiscovered('antigravity', ['gemini-3.8-flash-high'], { baseURL: 'http://127.0.0.1:8045' }, mdFake)[0]
+eq('档位变体走全局 models.dev 富化（不再落默认）', gw.source, 'models-dev')
+ok('拿到 1M 上下文 / 65536 输出', gw.contextWindow === 1048576 && gw.maxTokens === 65536)
+eq('模态归一到 text+image', gw.input, ['text', 'image'])
+eq('思考档位来自 models.dev', gw.reasoningEfforts, { low: 'low', medium: 'medium', high: 'high' })
+// 全局扫描在等效候选同分时按 provider 遍历顺序决出（实测会取到 vivgrid 的 128000），
+// 清单 upstream 必须把路由钉到真正厂商（google 65536），否则会写出超限的 maxTokens。
+ok('清单已声明 antigravity', M.manifestKeys().includes('antigravity'))
+const mdUpstream = {
+  vivgrid: { models: { 'gemini-3.8-flash': { modalities: { input: ['text', 'image'] }, limit: { context: 1048576, output: 128000 }, reasoning: true } } },
+  google: { models: { 'gemini-3.8-flash': { modalities: { input: ['text', 'image'] }, limit: { context: 1048576, output: 65536 }, reasoning: true, reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }] } } },
+}
+const up = M.mergeDiscovered('antigravity', ['gemini-3.8-flash-high'], { baseURL: 'x' }, mdUpstream)[0]
+ok('upstream 优先于全局扫描（取 google 65536，非网关 128000）', up.maxTokens === 65536 && up.contextWindow === 1048576, `maxTokens=${up.maxTokens}`)
+eq('upstream 命中同样带档位', up.reasoningEfforts, { low: 'low', medium: 'medium', high: 'high' })
+
+console.log('\n②c 区域命名空间前缀 + 同名优先 + 多数派（WorkBuddy 回归）')
+// 网关把同一模型按区域挂成 `cn:x` / `global:x`：不剥前缀时 WorkBuddy 的 65 条命中率 0%。
+ok('cn: 前缀等效', M.modelNameEquivalent('cn:deepseek-v4.1-flash', 'deepseek-v4.1-flash'))
+ok('global: 前缀等效', M.modelNameEquivalent('global:glm-5.3', 'glm-5.3'))
+ok('vendor/ 前缀等效（含大写）', M.modelNameEquivalent('hf:deepseek-ai/DeepSeek-V4-Pro', 'deepseek-v4-pro'))
+ok('区域后缀 -sg / @eu 等效', M.modelNameEquivalent('deepseek-v4.1-flash-sg', 'deepseek-v4.1-flash') && M.modelNameEquivalent('deepseek-v4.1-flash@eu', 'deepseek-v4.1-flash'))
+// 收窄规则的非回归：冒号只在"显式区域词"后才算命名空间，否则会把 ollama tag / Bedrock id 削成垃圾键
+eq('ollama tag 不被削', M.normalizeModelId('gpt-oss:20b'), 'gpt-oss:20b')
+ok('Bedrock id 不被削成 "0"', !M.modelNameEquivalent('global.anthropic.claude-haiku-4-5-20251001-v1:0', '0') && !M.modelNameEquivalent('eu.amazon.nova-pro-v1:0', 'us.writer.palmyra-x4-v1:0'))
+// 归一化同名优先于"上一代更丰富"候选（glm-5.3 不能被容量更大的 glm-5 抢走）
+const mdSame = {
+  zai: {
+    models: {
+      'glm-5': { modalities: { input: ['text', 'image'] }, limit: { context: 1048576, output: 262144 } },
+      'glm-5.3': { modalities: { input: ['text'] }, limit: { context: 1000000, output: 131072 } },
+    },
+  },
+}
+const sm = M.mergeDiscovered('wb', ['cn:glm-5.3'], { baseURL: 'x' }, mdSame)[0]
+ok('归一化同名优先（不被上一代 glm-5 抢走）', sm.contextWindow === 1000000 && sm.maxTokens === 131072, `ctx=${sm.contextWindow} out=${sm.maxTokens}`)
+// 全局扫描取多数派：1 家写 1050000/393216、2 家写 1048576/384000 → 取后者
+const mdConsensus = {
+  g1: { models: { 'foo-9': { modalities: { input: ['text', 'image'] }, limit: { context: 1050000, output: 393216 } } } },
+  g2: { models: { 'foo-9': { modalities: { input: ['text', 'image'] }, limit: { context: 1048576, output: 384000 } } } },
+  g3: { models: { 'foo-9': { modalities: { input: ['text', 'image'] }, limit: { context: 1048576, output: 384000 } } } },
+}
+const cs = M.mergeDiscovered('volcengine', ['foo-9'], { baseURL: 'x' }, mdConsensus)[0]
+ok('全局扫描取多数派（不取单家乐观值）', cs.contextWindow === 1048576 && cs.maxTokens === 384000, `ctx=${cs.contextWindow} out=${cs.maxTokens}`)
+ok('清单已声明 wb', M.manifestKeys().includes('wb'))
+
+console.log('\n②d 线上声明优先（hy4-preview-f 回归）')
+// 端点自己在 /v1/models 里声明了容量/输出上限/是否收图/档位 —— 它比 models.dev 快照权威：
+// 实测 cn:deepseek-v4-flash 被 models.dev 写成 maxTokens=384000，而端点声明 max_output_tokens=50000。
+const mdDecl = { google: { models: { 'gemini-3.8-flash': { modalities: { input: ['text', 'image'] }, limit: { context: 1048576, output: 65536 }, reasoning: true } } } }
+const decl = M.mergeDiscovered('antigravity', [{ id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (proxy)', contextWindow: 1000000, maxTokens: 50000, input: ['text'], reasoningEfforts: { high: 'high' } }], { baseURL: 'x' }, mdDecl)[0]
+eq('线上声明压过 models.dev（容量/输出/模态）', [decl.contextWindow, decl.maxTokens, decl.input], [1000000, 50000, ['text']])
+eq('来源标注为 provider', decl.source, 'provider')
+eq('名称用端点声明的 label', decl.name, 'Gemini 3.8 Flash (proxy)')
+const partial = M.mergeDiscovered('antigravity', [{ id: 'gemini-3.8-flash', contextWindow: 999999 }], { baseURL: 'x' }, mdDecl)[0]
+ok('逐字段兜底（未声明的字段仍取 models.dev）', partial.contextWindow === 999999 && partial.maxTokens === 65536 && partial.input.join() === 'text,image', JSON.stringify([partial.contextWindow, partial.maxTokens, partial.input]))
+// 字段名解析：WorkBuddy 用 context_length / max_output_tokens / supports_images / reasoning_supported_efforts
+const rawDecl = M.declaredFromRaw({ id: 'cn:hy4-preview-f', name: 'Hy4 preview', context_length: 1000000, max_allowed_size: 1000000, max_output_tokens: 64000, supports_images: true, supports_reasoning: true, reasoning_supported_efforts: ['high'] })
+eq('端点字段名解析', [rawDecl.contextWindow, rawDecl.maxTokens, rawDecl.input, rawDecl.reasoningEfforts], [1000000, 64000, ['text', 'image'], { high: 'high' }])
+eq('supports_images=false 是「本端点不收图」的声明', M.declaredFromRaw({ id: 'x', supports_images: false }).input, ['text'])
+ok('name 与 id 相同则不伪造 name', M.declaredFromRaw({ id: 'y', name: 'y' }).name === undefined)
+const hy = M.mergeDiscovered('wb', [{ id: 'cn:hy4-preview-f', contextWindow: 1000000, maxTokens: 64000, input: ['text', 'image'], reasoningEfforts: { high: 'high' } }], { baseURL: 'x' }, {})[0]
+ok('models.dev 无条目也能靠线上声明富化（hy4-preview-f）', hy.source === 'provider' && hy.contextWindow === 1000000 && hy.maxTokens === 64000 && hy.input.join() === 'text,image', JSON.stringify(hy))
+
 console.log('\n③ 目标形状转换')
 const shaped = merged.map((m) => M.toTargetModel('llm-deepseek', m)).find((m) => m.id === 'deepseek-v4.1-flash-expires-on-0910')
 eq('deepseek 形状用 inputModalities', shaped?.inputModalities, ['text', 'image'])

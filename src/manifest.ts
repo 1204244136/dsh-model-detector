@@ -45,6 +45,16 @@ export interface ManifestProvider {
    * 以 settings 里该 route 的归属为准。
    */
   target?: 'pi-ai' | 'deepseek'
+  /**
+   * 该路由在 models.dev 里的**上游厂商**（models.dev 只为真正的厂商/Vendor 注册 provider，
+   * 不给本地代理、聚合网关单独建条目 —— 如 antigravity 反代暴露的 gemini-* / claude-* /
+   * gpt-*，在 models.dev 里分别挂在 `google` / `anthropic` / `openai` 名下）。
+   *
+   * 命中上游时优先于全局跨厂商扫描：全局扫描在多个等效候选同分时按 provider 遍历顺序
+   * 决出，会任取某个网关的乐观值（实测 `gemini-3.8-flash` 取到 vivgrid 的
+   * maxTokens=128000，而 google 的权威值是 65536 —— 超限请求会被上游拒掉）。
+   */
+  upstream?: string[]
   /** 清单条目备注（UI 展示用，例如「内测模型」）。 */
   note?: string
   /**
@@ -124,7 +134,23 @@ export const MANIFEST: Record<string, ManifestProvider> = {
   // 无固定 baseURL 的模板（azure-openai-responses / cloudflare-* / opencode /
   // bearer-token 等按部署而定）不在此列。
   'ant-ling': { baseURL: 'https://api.ant-ling.com/v1', models: {} },
+  // antigravity（本机反代，Anthropic 协议，baseURL 形如 http://127.0.0.1:8045）：models.dev
+  // 没有这个 provider，且它的清单端点只在 /v1/models（见 api.ts 的 liveModelsUrls）。
+  // 这里只声明上游厂商用于富化；baseURL 属每台机器自己的本地端口，不写死。
+  'antigravity': { upstream: ['google', 'anthropic', 'openai'], models: {} },
   'anthropic': { baseURL: 'https://api.anthropic.com', models: {} },
+  // WorkBuddy（本机网关，baseURL 形如 http://127.0.0.1:7863/v1，清单同样只在 /v1/models）：
+  // 模型号带**区域命名空间前缀**（`cn:deepseek-v4.1-flash`、`global:glm-5.3`），由
+  // normalizeModelId 剥掉；upstream 按厂商声明，让 `glm-*`/`kimi-*`/`minimax-*`/`gpt-*`/
+  // `gemini-*`/`hy*` 拿到第一方元数据，而不是随机落进某个网关的乐观容量值。
+  'wb': {
+    upstream: [
+      'deepseek', 'moonshotai', 'zai', 'zhipuai', 'minimax', 'minimax-cn',
+      'tencent-tokenhub', 'tencent-token-plan', 'tencent-coding-plan',
+      'openai', 'google', 'anthropic', 'alibaba', 'alibaba-cn',
+    ],
+    models: {},
+  },
   'cerebras': { baseURL: 'https://api.cerebras.ai/v1', models: {} },
   // ── DeepSeek 官方 API（内置 llm-deepseek 适配器 + pi-ai 目录路由）──────────
   // 路由键有两种：内置适配器路由 `deepseek-official`（settings 段 `llm-deepseek`）

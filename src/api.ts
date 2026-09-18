@@ -53,7 +53,7 @@ function modelsDevEffortValues(md: unknown): string[] | undefined {
 }
 
 /**
- * models.dev reasoning_options → DSH reasoningEfforts。
+ * 一组档位名（如 `['low','high']`）→ DSH reasoningEfforts。
  *
  * 不同模型声明的档位不同（如 muse-spark 是 minimal/low/medium/high/xhigh，
  * qwen3.8-flash 是 low/medium/xhigh，kimi-k3 只有 max），因此逐模型读取，绝不
@@ -62,19 +62,23 @@ function modelsDevEffortValues(md: unknown): string[] | undefined {
  * 跳过（否则 DSH schema 会拒绝整个 profile）；若去掉 off 后没有任何档位
  * （纯开关模型）→ undefined（不写，交给 catalog 兜底，避免 DSH 校验拒绝）。
  */
-export function reasoningEffortsFromModelsDev(md: unknown): ReasoningEfforts | undefined {
-  const values = modelsDevEffortValues(md)
-  if (!values) return undefined
+function effortsFromLevels(values: string[] | undefined): ReasoningEfforts | undefined {
+  if (!values || values.length === 0) return undefined
   const out: ReasoningEfforts = {}
   let hasThinking = false
-  for (const v of values) {
-    const level = v === 'none' ? 'off' : v
+  for (const raw of values) {
+    const level = String(raw).toLowerCase() === 'none' ? 'off' : String(raw)
     if (!(THINKING_LEVELS as readonly string[]).includes(level)) continue
     if (level === 'off') { out.off = null; continue }
     out[level as ThinkingLevel] = level
     hasThinking = true
   }
   return hasThinking ? out : undefined
+}
+
+/** models.dev reasoning_options → DSH reasoningEfforts。 */
+export function reasoningEffortsFromModelsDev(md: unknown): ReasoningEfforts | undefined {
+  return effortsFromLevels(modelsDevEffortValues(md))
 }
 
 /**
@@ -299,18 +303,126 @@ export function subPath(req: any, prefix: string): string {
   return pathname.slice(prefix.length).replace(/^\/+/, '').replace(/\/+$/, '')
 }
 
-/** 用提供方 baseURL + apiKey 拉线上模型列表（OpenAI-compatible GET /models）。 */
-export async function fetchLiveModels(baseURL: string, apiKey?: string): Promise<Array<{ id: string }>> {
-  const url = `${baseURL.replace(/\/+$/, '')}/models`
+/**
+ * 线上模型清单的候选 URL（按顺序尝试）。
+ *
+ * 为什么不止 `<baseURL>/models` 一个：走 Anthropic 协议的路由（`api: anthropic-messages`）
+ * 其 baseURL **不能**带 `/v1`（SDK 自己会拼 `/v1/messages`），而这类本地代理/网关的清单
+ * 恰恰只在 `/v1/models` 暴露 —— 只试 `/models` 就会永远 404，发现拿不到任何 id，
+ * 用户看到的是"明明有模型却没认出来"（antigravity 本地代理即此例）。
+ * baseURL 已以 `/vN` 结尾时不追加，避免拼出 `/v1/v1/models`。
+ */
+export function liveModelsUrls(baseURL: string): string[] {
+  const base = baseURL.replace(/\/+$/, '')
+  const urls = [`${base}/models`]
+  if (!/\/v\d+$/i.test(base)) urls.push(`${base}/v1/models`)
+  return urls
+}
+
+/**
+ * 线上清单里**端点自己声明**的模型元数据（字段不保证存在，逐项可选）。
+ *
+ * 为什么它优先于 models.dev：这是端点对自己能力的陈述（上下文长度、输出上限、
+ * 是否收图、支持哪些思考档位），而 models.dev 是第三方快照——数字可能滞后，
+ * 也可能抄的是另一家网关的乐观值。WorkBuddy 就是典型：它的 `/v1/models` 每条都带
+ * `context_length`/`max_output_tokens`/`supports_images`/`reasoning_supported_efforts`，
+ * 而此前 `parseModelList()` 只留 `id`，把声明全丢了，导致 `hy4-preview-f` 这类
+ * models.dev 没有对应条目的模型只能落到保守默认。
+ */
+export interface DeclaredModel {
+  id: string
+  name?: string
+  contextWindow?: number
+  maxTokens?: number
+  input?: Array<'text' | 'image'>
+  reasoning?: boolean
+  reasoningEfforts?: ReasoningEfforts
+}
+
+/** 从线上清单一条原始记录提取端点声明（各家字段名不同，按常见写法逐个取第一个有效值）。 */
+export function declaredFromRaw(raw: any): DeclaredModel | undefined {
+  const id = typeof raw === 'string' ? raw : (typeof raw?.id === 'string' ? raw.id : '')
+  if (!id) return undefined
+  const out: DeclaredModel = { id }
+  const num = (...keys: string[]): number | undefined => {
+    for (const k of keys) {
+      const v = raw?.[k]
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v
+    }
+    return undefined
+  }
+  const bool = (...keys: string[]): boolean | undefined => {
+    for (const k of keys) if (typeof raw?.[k] === 'boolean') return raw[k]
+    return undefined
+  }
+  const name = typeof raw?.name === 'string' ? raw.name.trim() : ''
+  if (name && name !== id) out.name = name
+  // 容量/输出上限：`context_length` 与 `max_allowed_size` 都是容量（取先者），输出上限同理
+  const ctx = num('context_length', 'context_window', 'contextWindow', 'max_context_length', 'max_allowed_size', 'max_input_tokens')
+  if (ctx) out.contextWindow = ctx
+  const maxOut = num('max_output_tokens', 'max_completion_tokens', 'max_tokens', 'maxTokens', 'output_tokens')
+  if (maxOut) out.maxTokens = maxOut
+  // 模态：显式布尔（含 **明确的 false**，那是"本端点不收图"的陈述）优先，其次模态数组
+  const img = bool('supports_images', 'supportsImages', 'vision')
+  if (img !== undefined) out.input = img ? ['text', 'image'] : ['text']
+  else {
+    const mods = normalizeInput(raw?.modalities?.input ?? raw?.input_modalities ?? raw?.input)
+    if (mods) out.input = mods
+  }
+  const efforts = raw?.reasoning_supported_efforts ?? raw?.reasoningSupportedEfforts ?? raw?.reasoning_efforts
+  if (Array.isArray(efforts)) out.reasoningEfforts = effortsFromLevels(efforts.map((v: unknown) => String(v)))
+  const reasoning = bool('supports_reasoning', 'supportsReasoning')
+  if (reasoning !== undefined) out.reasoning = reasoning
+  return out
+}
+
+/** 解析一份模型清单响应：OpenAI 的 `data[]`，或少数网关的 `models[]`（元素可为 id 字符串）。 */
+function parseModelList(json: any): DeclaredModel[] {
+  const arr = Array.isArray(json?.data) ? json.data : Array.isArray(json?.models) ? json.models : []
+  const out: DeclaredModel[] = []
+  for (const raw of arr) {
+    const d = declaredFromRaw(raw)
+    if (d) out.push(d)
+  }
+  return out
+}
+
+/**
+ * 用提供方 baseURL + apiKey 拉线上模型列表（依次尝试 `/models`、`/v1/models`）。
+ *
+ * 认证头同时带 `authorization: Bearer` 与 `x-api-key`：后者是 Anthropic 系网关的惯例，
+ * 而本函数正是在没有协议信息的情况下猜端点，多带一个头比"猜错协议直接失败"更划算。
+ * 所有候选都失败时抛错并在消息里列出每个候选的失败原因（供 /discover 的诊断透出）。
+ * 返回值保留端点声明的元数据（见 {@link DeclaredModel}）。
+ */
+export async function fetchLiveModels(baseURL: string, apiKey?: string): Promise<DeclaredModel[]> {
   const headers: Record<string, string> = { accept: 'application/json' }
-  if (apiKey && apiKey.length > 0) headers.authorization = `Bearer ${apiKey}`
-  const res = await fetch(url, { headers })
-  if (!res.ok) throw new Error(`GET ${url} 失败: HTTP ${res.status}`)
-  const json: any = await res.json()
-  const data = Array.isArray(json?.data) ? json.data : []
-  return data
-    .map((e: any) => ({ id: typeof e?.id === 'string' ? e.id : '' }))
-    .filter((e: any) => e.id.length > 0)
+  if (apiKey && apiKey.length > 0) {
+    headers.authorization = `Bearer ${apiKey}`
+    headers['x-api-key'] = apiKey
+  }
+  const errors: string[] = []
+  for (const url of liveModelsUrls(baseURL)) {
+    let res: any
+    try {
+      res = await fetch(url, { headers })
+    } catch (e: any) {
+      errors.push(`GET ${url} 失败: ${String(e?.message ?? e)}`)
+      continue
+    }
+    if (!res.ok) { errors.push(`GET ${url} 失败: HTTP ${res.status}`); continue }
+    let json: any
+    try {
+      json = await res.json()
+    } catch (e: any) {
+      errors.push(`GET ${url} 响应不是 JSON: ${String(e?.message ?? e)}`)
+      continue
+    }
+    const list = parseModelList(json)
+    if (list.length === 0) { errors.push(`GET ${url} 未返回任何模型`); continue }
+    return list
+  }
+  throw new Error(errors.join('；') || `无法从 ${baseURL} 获取模型清单`)
 }
 
 /** models.dev 缓存：{ providerId: { models: { modelId: { modalities, limit, reasoning, ... } } } }。 */
@@ -356,24 +468,60 @@ export function modelsDevStatus() {
 }
 
 /**
- * 归一化模型 id 用于名字级匹配：小写、去尾部日期/版本/后缀段。
+ * 思考档位 / 行为变体后缀（**不改变模型本体**，一律视为"版本噪声"剥掉）。
+ *
+ * 为什么必须剥：网关/代理常把同一个模型按档位拆成多个 id
+ * （`gemini-3.8-flash-high` / `-low` / `-medium` / `-tiered` 都指向 `gemini-3.8-flash`），
+ * 只认纯净 id 会让这些线上条目全部落到保守默认（262144/32768/纯文本）——即
+ * "models.dev 明明有，却认不出来"。
+ *
+ * 为什么**不含 `max`**：`-max` 在真实数据里大量是**独立模型档**而非档位变体
+ * （`gpt-5.1-codex-max`、`minimax-h3-max`、`qwen3.6-max`），剥掉会把它们误判成
+ * 不带 max 的另一个模型。宁可让 `xxx-max` 自己走精确/保守路径。
+ */
+const EFFORT_SUFFIX_RE = /[-_.:](?:extra[-_.])?(?:xhigh|minimal|low|medium|high|tiered|thinking|nothinking|agent)(?=[-_.]|$)/g
+
+/**
+ * 前导**区域/命名空间前缀**（`cn:`、`global:`、`hf:`）与 `vendor/` 仓库前缀
+ * （`deepseek-ai/DeepSeek-V4.1-Flash`）同样不改变模型本体，必须剥掉。
+ *
+ * 为什么：网关/反代常把同一模型按区域挂成多个 id —— WorkBuddy 的 65 条全部形如
+ * `cn:deepseek-v4.1-flash` / `global:glm-5.3`，不剥前缀时实测命中率 **0%**、全部落到
+ * 保守默认；models.dev 侧也常见 `deepseek-ai/DeepSeek-V4.1-Flash`、`requesty/…@eu`。
+ *
+ * 为什么冒号前缀**只认显式区域词**而不泛化成任意 `x:`：`gpt-oss:20b`（ollama tag）与
+ * Bedrock 的 `global.anthropic.claude-haiku-4-5-…-v1:0` 都含冒号，泛化剥法会把它们
+ * 削成 `20b` / `0` 这种垃圾键，进而让互不相干的模型互相"等效命中"（实测踩过）。
+ * 斜杠前缀没有这个歧义，可以泛化。
+ */
+const PREFIX_RE = /^(?:(?:cn|global|intl|us|eu|jp|sg|hk|uk|ams|hf)[:/]|[a-z0-9_.-]+\/)+/
+const REGION_SUFFIX_RE = /[-_.@](?:intl|global|cn|us|eu|jp|sg|hk|uk|ams)(?=$)/g
+
+/**
+ * 归一化模型 id 用于名字级匹配：小写、去前导命名空间、去尾部日期/版本/后缀/档位段。
  * 注意 `-expires-on-0910`（内测模型的到期标记）也属于"版本/日期噪声"，必须剥掉，
  * 否则 `deepseek-v4.1-flash-expires-on-0910` 无法与 `deepseek-v4-flash` 等效命中。
  */
-function normalizeModelId(id: string): string {
+export function normalizeModelId(id: string): string {
   return id
     .toLowerCase()
+    // 前导区域/命名空间/vendor 前缀（可叠加：hf:deepseek-ai/DeepSeek-…）
+    .replace(PREFIX_RE, '')
     // 去掉尾部日期段（YYMMDD=6位 / YYYYMMDD=8位）及 latest/beta/rc/dev/preview/ga/stable 后缀
     .replace(/(?:[-_.])?(?:[12]\d{7}|\d{6})\s*$/g, '')
     .replace(/[-_.](?:latest|beta|rc|dev|preview|ga|stable)\b(?:[-_.]|\b)/g, '')
     // 内测模型的到期标记：-expires-on-0910 / -expires-0910
     .replace(/(?:[-_.])expires(?:[-_.])on(?:[-_.])?\d{0,8}\s*$/g, '')
+    // 档位/行为变体后缀（-high / -low / -thinking / -tiered …）
+    .replace(EFFORT_SUFFIX_RE, '')
+    // 区域后缀（-sg / @eu）
+    .replace(REGION_SUFFIX_RE, '')
     .replace(/[-_.]+/g, '-')
     .replace(/^-+|-+$/g, '')
 }
 
 /** 名字级等效判断：归一化后相等，或一侧是另一侧前缀且多出部分仅版本/数字段。 */
-function modelNameEquivalent(a: string, b: string): boolean {
+export function modelNameEquivalent(a: string, b: string): boolean {
   const na = normalizeModelId(a)
   const nb = normalizeModelId(b)
   if (!na || !nb) return false
@@ -400,17 +548,32 @@ function entryScore(entry: any): number {
  * （`deepseek-v4-flash` vs `deepseek-v4-flash-vision-exp`），而手填的模型号
  * （如 `deepseek-v4.1-flash-expires-on-0910`）与两者都"版本级等效"。取第一个会
  * 命中纯文本条目，导致新模型永远拿不到图像模态——正是本插件要修的问题。
- * 精确同名命中永远优先（不引入猜测）。
+ *
+ * 优先级三层（「精确同名永远优先」的完整版）：
+ *  1. 原始键精确同名；
+ *  2. **归一化后同名**（`cn:glm-5.1` ↔ `glm-5.1`、`hf:deepseek-ai/DeepSeek-V4-Pro` ↔ `deepseek-v4-pro`）；
+ *  3. 前缀等效（`kimi-k3-1` ↔ `kimi-k3`）。
+ *
+ * 为什么必须先分两层再比"能力"：第 3 层会把**上一代**模型也算成等效
+ * （`glm-5.1` ~ `glm-5`、`deepseek-v3-1` ~ `deepseek-v3`、`gpt-5.5` ~ `gpt-5`，余量是纯数字），
+ * 而"含 image > 容量"的打分可能刚好让上一代胜出（实测 `cn:glm-5.1` 一度命中 `glm-5`）。
  */
 function pickBestMatch<T>(entries: Record<string, T> | undefined, id: string): T | undefined {
   if (!entries) return undefined
   if (entries[id] !== undefined) return entries[id]
+  const target = normalizeModelId(id)
+  const candidates: Array<{ key: string; entry: T }> = []
+  for (const key in entries) {
+    if (modelNameEquivalent(key, id)) candidates.push({ key, entry: entries[key] })
+  }
+  if (candidates.length === 0) return undefined
+  const sameName = candidates.filter((c) => normalizeModelId(c.key) === target)
+  const pool = sameName.length > 0 ? sameName : candidates
   let best: T | undefined
   let bestScore = -1
-  for (const key in entries) {
-    if (!modelNameEquivalent(key, id)) continue
-    const score = entryScore(entries[key])
-    if (score > bestScore) { bestScore = score; best = entries[key] }
+  for (const c of pool) {
+    const score = entryScore(c.entry)
+    if (score > bestScore) { bestScore = score; best = c.entry }
   }
   return best
 }
@@ -421,18 +584,54 @@ function findByName<T>(entries: Record<string, T> | undefined, id: string): T | 
 }
 
 /**
+ * 按清单声明的**上游厂商**在 models.dev 里找等效条目（按 `upstream` 顺序，先命中先用）。
+ * 用于本地代理/聚合网关这类 models.dev 未注册 provider 的路由：模型其实挂在真正厂商名下。
+ */
+function upstreamModelsDevModel(
+  mp: ManifestProvider | undefined,
+  modelsDev: Record<string, any>,
+  id: string,
+): any | undefined {
+  for (const up of mp?.upstream ?? []) {
+    const hit = findByName(modelsDev?.[up]?.models, id)
+    if (hit) return hit
+  }
+  return undefined
+}
+
+/**
  * 全局 models.dev 回退：当前提供方未收录时，按名字级等效在 models.dev 的其它
  * 提供方里命中。聚合/网关路由（如 opencode-go、volcengine）常把模型挂在各自
  * 上游厂商 slug（如 minimax、deepseek）下，而非当前路由键，需跨提供方扫一遍。
+ *
+ * 这是**最后手段**，且有"网关乐观值"陷阱：同一模型常被数十家网关各抄一份、容量数字
+ * 互不相同，直接取"容量最大"会稳定命中某个只此一家的乐观值（实测
+ * `deepseek-v4.1-flash` 取到 1050000/393216 —— 只有 1 家这么写，另有 30+ 家写
+ * 1000000|1048576 / 384000）。因此选择顺序是：
+ *  1. 含 image 的候选优先（沿用"宁可拿多模态"的既有口径）；
+ *  2. 同类里取**多数派**（按 容量|输出 分组计数最多的一组）；
+ *  3. 多数派内再按容量取大者。
+ * 清单里有 `upstream` 声明的路由应先走 {@link upstreamModelsDevModel}（第一方权威）。
  */
 function globalModelsDevModel(modelsDev: Record<string, any>, id: string): any | undefined {
-  let best: any
-  let bestScore = -1
+  const pool: any[] = []
   for (const providerId in modelsDev) {
     const hit = findByName(modelsDev[providerId]?.models, id)
-    if (!hit) continue
-    const score = entryScore(hit)
-    if (score > bestScore) { bestScore = score; best = hit }
+    if (hit) pool.push(hit)
+  }
+  if (pool.length === 0) return undefined
+  const withImage = pool.filter((e) => entryScore(e) >= 1e9)
+  const bucket = withImage.length > 0 ? withImage : pool
+  const shape = (e: any) => `${e?.limit?.context ?? e?.contextWindow ?? 0}|${e?.limit?.output ?? e?.maxTokens ?? 0}`
+  const counts = new Map<string, number>()
+  for (const e of bucket) counts.set(shape(e), (counts.get(shape(e)) ?? 0) + 1)
+  const top = Math.max(...counts.values())
+  const major = bucket.filter((e) => counts.get(shape(e)) === top)
+  let best: any
+  let bestScore = -1
+  for (const e of major) {
+    const score = entryScore(e)
+    if (score > bestScore) { bestScore = score; best = e }
   }
   return best
 }
@@ -441,11 +640,26 @@ function globalModelsDevModel(modelsDev: Record<string, any>, id: string): any |
  * 合并：线上最新 id + models.dev（权威能力源）+ 内置 manifest（薄覆盖）→ 元数据。
  * 能力（上下文/容量/模态/推理）以 models.dev 为准；manifest 仅覆盖 dsh 专属字段
  * （name/thinkingLevelMap/compat）与 models.dev 缺口；两者都没有 → 保守默认。
- * 优先级：当前提供方 models.dev > 全局 models.dev > 当前提供方 manifest > 保守默认。
+ * 优先级：当前提供方 models.dev > 清单 upstream 厂商 > 全局 models.dev > 当前提供方 manifest > 保守默认。
+ */
+/**
+ * 合并：线上 id（含端点自声明的元数据）+ models.dev（权威能力源）+ 内置 manifest → 元数据。
+ *
+ * 优先级是**逐字段**的（各来源覆盖的字段不同，不能整体二选一）：
+ *  - 容量/输出上限/模态/档位：**线上声明** > 当前路由 models.dev > 清单 upstream 厂商
+ *    > 全局 models.dev > 当前路由 manifest > 家族推断 > 保守默认；
+ *  - name：线上声明 > models.dev > manifest > id；
+ *  - 档位要额外让 manifest 的人工 `thinkingLevelMap`（精确 wire 值）先过一遍；
+ *  - compat 只来自 manifest（dsh 专属字段，models.dev 没有）。
+ *
+ * 为什么线上声明优先：它是端点自己的能力陈述，而 models.dev 是第三方快照（可能滞后，
+ * 也可能抄的是别家网关的乐观值——实测 `cn:deepseek-v4-flash` 被写成 maxTokens=384000，
+ * 而端点自己声明 `max_output_tokens: 50000`，照 384000 发请求会被上游拒）。
+ * 未声明对应字段的路由（如 antigravity 只回 id/object/created/owned_by）行为完全不变。
  */
 export function mergeDiscovered(
   provider: string,
-  liveIds: string[],
+  liveModels: Array<string | DeclaredModel>,
   providerDefault: { api?: string; baseURL?: string; contextWindow?: number; maxTokens?: number; input?: Array<'text' | 'image'> },
   modelsDev: Record<string, any>,
 ): Array<Record<string, unknown>> {
@@ -454,10 +668,14 @@ export function mergeDiscovered(
   const defInput = (providerDefault.input && providerDefault.input.length > 0)
     ? providerDefault.input
     : (['text'] as Array<'text' | 'image'>)
-  return liveIds.map(id => {
+  return liveModels.map((entry) => {
+    const d: DeclaredModel = typeof entry === 'string' ? { id: entry } : entry
+    const id = d.id
     // 权威能力源：models.dev（当前提供方，精确 + 名字级等效）。注意 models.dev 结构为
     // provider.models[modelId]，需经 .models 取模型表，而非 provider[modelId]。
     let md = provDev?.models?.[id] ?? findByName(provDev?.models, id)
+    // 清单声明的上游厂商（models.dev 没为该路由建 provider 时的权威来源）
+    if (!md) md = upstreamModelsDevModel(mp, modelsDev, id)
     // 当前提供方未收录 → 跨厂商在 models.dev 里名字级回退（仍来自 models.dev，权威）
     if (!md) md = globalModelsDevModel(modelsDev, id)
     // 薄覆盖：内置 manifest（当前提供方），补 dsh 专属字段与 models.dev 缺口
@@ -465,20 +683,23 @@ export function mergeDiscovered(
     if (!mf && mp) mf = findByName(mp.models, id)
     // manifest 目录（适配器默认就服务的模型）也参与兜底：手填的新模型常与目录条目同族
     if (!mf && mp?.catalog) mf = mp.catalog[id] ?? findByName(mp.catalog, id)
-    const contextWindow = md?.limit?.context ?? mf?.contextWindow ?? providerDefault.contextWindow
-    const maxTokens = md?.limit?.output ?? mf?.maxTokens ?? providerDefault.maxTokens
-    const input = normalizeInput(md?.modalities?.input) ?? mf?.input ?? inferFamilyInput(mp, id) ?? defInput
-    // 思考档位：manifest 人工覆盖（thinkingLevelMap，含精确 wire 值）优先 → models.dev
-    // 自动声明（reasoning_options）。两者都没有 → 不写，交给 pi-ai catalog 兜底。
-    const reasoningEfforts = reasoningEffortsFromManifest(mf?.thinkingLevelMap) ?? reasoningEffortsFromModelsDev(md)
+    const contextWindow = d.contextWindow ?? md?.limit?.context ?? mf?.contextWindow ?? providerDefault.contextWindow
+    const maxTokens = d.maxTokens ?? md?.limit?.output ?? mf?.maxTokens ?? providerDefault.maxTokens
+    const input = d.input ?? normalizeInput(md?.modalities?.input) ?? mf?.input ?? inferFamilyInput(mp, id) ?? defInput
+    // 思考档位：manifest 人工覆盖（thinkingLevelMap，含精确 wire 值）→ 线上声明 → models.dev
+    // 自动声明（reasoning_options）。都没有 → 不写，交给 pi-ai catalog 兜底。
+    const reasoningEfforts = reasoningEffortsFromManifest(mf?.thinkingLevelMap)
+      ?? d.reasoningEfforts ?? reasoningEffortsFromModelsDev(md)
     // 是否推理（仅 UI 展示用；apply 时不写入——DSH 模型级 schema 无 reasoning 布尔字段，
     // 推理能力由 reasoningEfforts 表达）。
-    const reasoning = reasoningEfforts !== undefined ? true : (md?.reasoning ?? mf?.reasoning ?? false)
-    // 来源：models.dev > manifest > 保守默认（供 UI 区分"查得"与"兜底"）
-    const source = md ? 'models-dev' : mf ? 'manifest' : 'default'
+    const reasoning = reasoningEfforts !== undefined ? true : (d.reasoning ?? md?.reasoning ?? mf?.reasoning ?? false)
+    // 来源标注：只要用了端点自声明的**能力字段**就算 provider（name 不算，否则每条都成 provider）
+    const declaredCapability = d.contextWindow !== undefined || d.maxTokens !== undefined
+      || d.input !== undefined || d.reasoningEfforts !== undefined || d.reasoning !== undefined
+    const source = declaredCapability ? 'provider' : md ? 'models-dev' : mf ? 'manifest' : 'default'
     return {
       id,
-      name: (md?.name || mf?.name || id) as string,
+      name: (d.name || md?.name || mf?.name || id) as string,
       ...(mf?.note ? { note: mf.note } : {}),
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxTokens ? { maxTokens } : {}),
@@ -848,7 +1069,8 @@ function suggestionFor(
 ): { suggested: Record<string, unknown>; source: EditableModel['suggestedSource']; note?: string } {
   const mp = manifestProvider(route)
   const provDev = modelsDev?.[route]
-  const md = provDev?.models?.[id] ?? findByName(provDev?.models, id) ?? globalModelsDevModel(modelsDev, id)
+  const md = provDev?.models?.[id] ?? findByName(provDev?.models, id)
+    ?? upstreamModelsDevModel(mp, modelsDev, id) ?? globalModelsDevModel(modelsDev, id)
   const mf = mp?.models[id] ?? (mp ? findByName(mp.models, id) : undefined)
   const cat = catalog?.[id] ?? (catalog ? findByName(catalog, id) : undefined)
   if (md) {

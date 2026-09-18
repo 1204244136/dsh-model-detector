@@ -31,6 +31,7 @@ const formatEfforts = (e?: Record<string, string | null>) => {
 
 /** 元数据来源标注：UI 据此区分「查得」与「兜底」，避免把默认当查得。 */
 const SOURCE_LABEL: Record<string, string> = {
+  'provider': '线上声明',
   'models-dev': 'models.dev',
   'manifest': '清单',
   'catalog': '目录',
@@ -164,7 +165,7 @@ export function ModelCatalogPage(): React.ReactElement {
   const [page, setPage] = React.useState(1)
   const [busy, setBusy] = React.useState(false)
   const [status, setStatus] = React.useState<{ ok: boolean; text: string } | null>(null)
-  const [meta, setMeta] = React.useState<{ sourceCounts: Record<string, number>; modelsDevLoaded?: boolean; modelsDevProviders?: number; providerInModelsDev?: boolean; modelsDevError?: string } | null>(null)
+  const [meta, setMeta] = React.useState<{ sourceCounts: Record<string, number>; modelsDevLoaded?: boolean; modelsDevProviders?: number; providerInModelsDev?: boolean; modelsDevError?: string; warn?: string } | null>(null)
   // ── 编辑模式状态 ──
   const [cur, setCur] = React.useState<CurrentInfo | null>(null)
   const [drafts, setDrafts] = React.useState<Record<string, Draft>>({})
@@ -232,9 +233,10 @@ export function ModelCatalogPage(): React.ReactElement {
         const auto = list.length <= AUTO_SELECT_LIMIT ? new Set(list.map((m) => m.id)) : new Set<string>()
         setModels(list)
         setSelected(auto)
-        // models.dev 诊断：让「是否已加载/是否收录」可见，避免静默降级
-        setMeta({ sourceCounts: j.sourceCounts || {}, modelsDevLoaded: j.modelsDevLoaded, modelsDevProviders: j.modelsDevProviders, providerInModelsDev: j.providerInModelsDev, modelsDevError: j.modelsDevError })
-        setStatus({ ok: true, text: `获取到 ${list.length} 个模型${auto.size > 0 ? '（已自动全选，可应用）' : '（数量较大，请用搜索或手动勾选）'}${j.fromManifestOnly ? `；models.dev 兜底：${j.warn}` : ''}` })
+        // models.dev 诊断：让「是否已加载 / 是否收录 / 线上为何失败」可见，避免静默降级
+        setMeta({ sourceCounts: j.sourceCounts || {}, modelsDevLoaded: j.modelsDevLoaded, modelsDevProviders: j.modelsDevProviders, providerInModelsDev: j.providerInModelsDev, modelsDevError: j.modelsDevError, warn: typeof j.warn === 'string' ? j.warn : undefined })
+        const hint = list.length === 0 ? '' : auto.size > 0 ? '（已自动全选，可应用）' : '（数量较大，请用搜索或手动勾选）'
+        setStatus({ ok: true, text: `获取到 ${list.length} 个模型${hint}` })
       } else {
         setStatus({ ok: false, text: j?.error || '获取失败' })
         setMeta(null)
@@ -540,13 +542,16 @@ export function ModelCatalogPage(): React.ReactElement {
       {mode === 'discover' && meta && meta.modelsDevLoaded === false && (
         <div className="mc-alert mc-alert-warn"><span className="mc-alertIcon">⚠</span>models.dev 加载失败{meta.modelsDevError ? `（${meta.modelsDevError}）` : ''}，能力仅靠清单/默认</div>
       )}
+      {mode === 'discover' && meta?.warn && (
+        <div className="mc-alert mc-alert-warn"><span className="mc-alertIcon">⚠</span><span className="mc-alertText">{meta.warn}</span></div>
+      )}
 
       {/* ── 发现模式 ── */}
       {mode === 'discover' && (
         <>
           {meta && (
             <div className="mc-counts">
-              {(['models-dev', 'manifest', 'default'] as const).map((k) => {
+              {(['provider', 'models-dev', 'manifest', 'default'] as const).map((k) => {
                 const n = meta.sourceCounts[k]
                 if (!n) return null
                 return <span key={k} className={`mc-count mc-count-${k}`}>{SOURCE_LABEL[k]} <b>{n}</b></span>

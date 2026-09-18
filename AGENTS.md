@@ -4,9 +4,9 @@
 
 ## 定位（一句话）
 
-> 为任意 pi-ai 提供方（以及 DeepSeek 官方 API 路由 `deepseek-official`）「**检测**其线上最新模型 + 用 models.dev 自动富化正确元数据（模态/容量/推理）+ 写入该提供方」，并支持**手动编辑现有模型参数**——设置页插件。
+> 为任意 pi-ai 提供方（以及 DeepSeek 官方 API 路由 `deepseek-official`）「**检测**其线上最新模型 + 用「端点自声明 + models.dev」自动富化正确元数据（模态/容量/推理）+ 写入该提供方」，并支持**手动编辑现有模型参数**——设置页插件。
 
-**明确不是**：静态"模型目录/百科"（那是我们放弃的旧定位）；也不是手工维护清单（models.dev 是自动主源）。
+**明确不是**：静态"模型目录/百科"（那是我们放弃的旧定位）；也不是手工维护清单（能力值的自动主源是**端点自己在 `/models` 里的声明**，其次 models.dev）。
 
 ## 架构（双半区）
 
@@ -37,25 +37,31 @@
 /discover(route) →
   resolveTarget(route, st) 取 profile；baseURL 兜底 manifestProvider(route).baseURL
   解析 apiKey：请求体 → 凭据服务 resolve(apiKeyEnv)
-  fetchLiveModels(baseURL, apiKey)   # GET <baseURL>/models（线上最新 id）
-  mergeDiscovered(route, ids, defaults, modelsDev)
-    # 优先级：models.dev → manifest → 家族推断 → 默认(text+262144/32768)
+  fetchLiveModels(baseURL, apiKey)   # 依次试 <baseURL>/models、<baseURL>/v1/models，返回 DeclaredModel[]（id + 端点自声明元数据）
+  mergeDiscovered(route, live, defaults, modelsDev)
+    # 逐字段优先级：线上声明 → 本路由 models.dev → 清单 upstream 厂商 → 全局 models.dev → manifest → 家族推断 → 默认(text+262144/32768)
   toTargetModel(ns, m)  # 统一形状 → pi-ai(input) / deepseek(inputModalities)
-  // 线上失败只回退 models.dev/manifest，绝不回退该提供方旧配置
+  // 线上失败只回退 models.dev/manifest，绝不回退该提供方旧配置；
+  // 回退拿不到任何 id（该路由既不在 models.dev、也不在清单）时返回 0 条 + warn（前端必须显示原因）
 
 /current(route) → 现有模型（profile models/modelOverrides + 适配器目录）+ 建议值
 /save-model → writeModel（就地合并该条；pi-ai 目录路由无 models 列表时写 modelOverrides）
 ```
 
-## 元数据来源（四级，切勿回到"人工逐模型维护"）
+## 元数据来源（切勿回到"人工逐模型维护"）
 
-1. **models.dev**（`https://models.dev/api.json`，`loadModelsDev()` 缓存一次/会话，**主源**）——自动、覆盖几乎所有提供方、含模态/容量/推理。
+0. **线上声明**（`DeclaredModel`）——**端点自己在 `/models` 里声明的能力值，优先级最高**。`fetchLiveModels()` 逐条解析 `context_length`/`context_window`/`max_allowed_size`、`max_output_tokens`/`max_completion_tokens`、`supports_images`/`vision`（**显式的 `false` 也算声明**："本端点不收图"）、`supports_reasoning`、`reasoning_supported_efforts`、`name`。为什么压过 models.dev：这是端点对自己能力的陈述，而 models.dev 是第三方快照（可能滞后，也可能抄的是别家网关的乐观值——实测 `cn:deepseek-v4-flash` 被 models.dev 写成 `maxTokens=384000`，端点自己声明 `max_output_tokens: 50000`，照 384000 发请求会被上游拒）。WorkBuddy 的 65 条全靠它才 100% 命中（含 models.dev 根本没有的 `hy4-preview-f`/`hy3-x`/`cn:auto`/`-volc`/`-lkeap` 变体）。**逐字段生效**：端点没声明的字段仍按下面的顺序回落；只声明 `id/object/created/owned_by` 的路由（如 antigravity）行为完全不变。来源标注为 `provider`（UI 显示「线上声明」）。
+1. **models.dev**（`https://models.dev/api.json`，`loadModelsDev()` 缓存一次/会话）——自动、覆盖几乎所有提供方、含模态/容量/推理；端点不声明时的主源。
 2. **内置 manifest**（`src/manifest.ts`，薄覆盖层）——只兜底 models.dev 缺/错的个别模型（如 `hy3-preview`、内测模型）；按提供方 keyed，可扩展。`catalog` 字段是"适配器默认目录"（deepseek-official 的三条），用于编辑页列出。
 3. **家族模态推断**（`inferFamilyInput()`）——清单里完全没有该模型号时，若同族条目声明了 image 则继承模态（内测/预发布模型）。宁可保守也不按名字里的 `vision` 字样猜。
 4. **保守默认**：`text` + 262144/32768。
 
-> **名字级匹配必须"优先能力更丰富者"**：`pickBestMatch()` 在等效候选里按「含 image > 上下文容量」打分。原因：同一系列常有纯文本与多模态两条线（`deepseek-v4-flash` vs `deepseek-v4-flash-vision-exp`），而 `deepseek-v4.1-flash-expires-on-0910` 这类手填 id 与两者都"版本级等效"——**取第一个命中会落到纯文本条目**。精确同名命中永远优先。
+> **名字级匹配必须"优先能力更丰富者"**：`pickBestMatch()` 在等效候选里按「含 image > 上下文容量」打分。原因：同一系列常有纯文本与多模态两条线（`deepseek-v4-flash` vs `deepseek-v4-flash-vision-exp`），而 `deepseek-v4.1-flash-expires-on-0910` 这类手填 id 与两者都"版本级等效"——**取第一个命中会落到纯文本条目**。
+> **选候选分三层**：① 原始键精确同名 → ② **归一化后同名** → ③ 前缀等效（`kimi-k3-1` ↔ `kimi-k3`）。②必须先于③，否则第③层会把**上一代**模型也当等效（`glm-5.1` ~ `glm-5`、`deepseek-v3-1` ~ `deepseek-v3`、`gpt-5.5` ~ `gpt-5`，余量都是纯数字），而"含 image > 容量"的打分可能刚好让上一代胜出（实测 `cn:glm-5.1` 一度命中 `glm-5`）。
 > `normalizeModelId()` 会剥掉尾部 `-expires-on-0910` 之类到期标记，否则内测 id 无法等效命中。
+> 同样必须剥掉**思考档位/行为后缀**（`EFFORT_SUFFIX_RE`：`-high/-low/-medium/-minimal/-xhigh/-tiered/-thinking/-agent`）：网关常把同一模型按档位拆成多个 id（antigravity 只暴露 `gemini-3.8-flash-high/-low/-tiered`，models.dev 里叫 `google/gemini-3.8-flash`），不剥就全部落到保守默认。**`-max` 故意不在名单里**：`gpt-5.1-codex-max`、`minimax-h3-max`、`qwen3.6-max` 在真实数据里是**独立模型档**，剥掉会误命中。
+> 还要剥掉**区域命名空间前缀与区域后缀**（`PREFIX_RE` / `REGION_SUFFIX_RE`）：WorkBuddy 的 65 条全部形如 `cn:deepseek-v4.1-flash` / `global:glm-5.3`，不剥前缀时实测命中率 **0%**。**冒号前缀只认显式区域词**（`cn|global|intl|us|eu|jp|sg|hk|uk|ams|hf`）而不泛化成任意 `x:`——`gpt-oss:20b`（ollama tag）与 Bedrock 的 `global.anthropic.claude-…-v1:0` 都含冒号，泛化剥法会把它们削成 `20b` / `0` 并互相误命中；斜杠（`vendor/model`）没有这个歧义，可泛化。
+> **全局跨厂商扫描（`globalModelsDevModel`）是最后手段**，有两层保护：① 清单里给"本地代理/聚合网关"路由声明 `upstream`（见 `MANIFEST['antigravity']` / `MANIFEST['wb']`），`upstreamModelsDevModel()` 优先取第一方权威值（实测 `gemini-3.8-flash` 全局会取 vivgrid 的 `maxTokens=128000`，google 是 65536）；② 全局扫描本身先按「含 image」筛，再在同类里取**多数派**（按 `容量|输出` 分组计数），最后才比容量——否则单个网关的乐观值稳定胜出（实测 `deepseek-v4.1-flash` 取到只有 1 家这么写的 1050000/393216，30+ 家写 1000000|1048576 / 384000）。
 
 > **模态归一化**：`normalizeInput()` 把 models.dev 的 `['text','image','video',...]` 归为 `['text','image']`（含 image）否则 `['text']`。DSH 只支持 text/image，**不要**把 video/pdf/audio 当作 DSH 模态。
 
@@ -70,9 +76,9 @@
 
 ## 构建（务必注意）
 
-`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH）。
+`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（`hy4-preview-f` 回归）/ 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
 
-> 改动 `api.ts` / `manifest.ts` 后**务必跑 `npm run build && npm run verify`**：`verify.mjs` 覆盖的就是最容易回归的两处（内测模型号必须拿到 image 模态；写入字段必须落在各自 schema 白名单内）。
+> 改动 `api.ts` / `manifest.ts` 后**务必跑 `npm run build && npm run verify`**：`verify.mjs` 覆盖的就是最容易回归的几处（内测模型号必须拿到 image 模态；`/models` 拉不到时必须试 `/v1/models`；`-high/-low/-tiered` 档位变体与 `cn:`/`global:` 区域前缀必须富化而不是落默认；`supports_images=false` 必须当纯文本声明；**线上声明必须压过 models.dev 且逐字段回落**；归一化同名必须压过"上一代更丰富"候选；`upstream` 与多数派必须压过单家网关乐观值；写入字段必须落在各自 schema 白名单内）。
 
 > ✅ `scripts/build.mjs` **自动探测 tsc**：优先本地 `node_modules/typescript`，否则回退 DSH checkout 的 tsc（`$DSH_CHECKOUT` 或 `~/Documents/GitHub/deepseek-harness`）——**不再依赖 bash，也不需要本地 TypeScript**。
 
@@ -138,7 +144,7 @@
 ## 改动时注意
 
 - **改名**：批量字符串替换即可（包名、`export const name`、`API_PREFIX`、client `name`/`id`/`STYLE_ID`、`cordis.patch.yml`、label、tool 名）。**不要用 `Move-Item` 移动整个目录**——它处理带 junction 的 node_modules 会破坏依赖链接，导致构建/运行时报错（我们踩过）。改完 `node <tsc> -p tsconfig.json` + `npm run build:client` + 重装 + 重启即可。
-- **新增提供方 → manifest**：只改 `src/manifest.ts` 加一段 `MANIFEST[providerId]`；models.dev 若已收录则 manifest 无需覆盖。
+- **新增提供方 → manifest**：只改 `src/manifest.ts` 加一段 `MANIFEST[providerId]`；models.dev 若已收录则 manifest 无需覆盖。**本地代理 / 聚合网关**（models.dev 没有该 provider 键，如 `antigravity`、`wb`）除了 `models: {}` 还应声明 `upstream: [...]`（按厂商顺序，可多家）——否则只能靠全局跨厂商扫描，取值会随机落到某个网关的乐观容量上。`wb` 这类**区域命名空间**网关（`cn:` / `global:` 前缀）靠 `normalizeModelId` 剥前缀，无需在清单里逐条登记。
 - **宿主注入依赖**：`ctx.get('settings')` / `host.get('credentials')` 直接取；webServer 路由用 `ctx.webServer.register`。
 
 ## Git 提交规范（必读）

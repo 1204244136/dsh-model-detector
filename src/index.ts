@@ -100,8 +100,10 @@ export function apply(ctx: Context, config: Config): void {
           const shape = (list: Array<Record<string, unknown>>) =>
             target ? list.map((m) => toTargetModel(target.ns, m)) : list
           try {
-            const liveIds = await fetchLiveModels(baseURL, apiKey)
-            const merged = mergeDiscovered(route, liveIds.map((x: { id: string }) => x.id), defaults, modelsDev)
+            // 线上清单里端点自声明的元数据（容量/输出上限/模态/档位）一并带进合并：
+            // 它是端点自己的能力陈述，优先级高于 models.dev 的第三方快照。
+            const live = await fetchLiveModels(baseURL, apiKey)
+            const merged = mergeDiscovered(route, live, defaults, modelsDev)
             return json(res, 200, {
               ok: true, models: shape(merged), raw: merged, source: 'live+models.dev', fromManifestOnly: false,
               route, ns: target?.ns ?? 'llm-pi-ai', target: target?.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
@@ -115,13 +117,17 @@ export function apply(ctx: Context, config: Config): void {
             const mdIds = modelsDev?.[route]?.models ? Object.keys(modelsDev[route].models) : []
             const mpIds = mp ? Object.keys(mp.models) : []
             const ids = mdIds.length > 0 ? mdIds : mpIds
-            const catalogWarn = ids.length === 0
-              ? `${String(e?.message ?? e)} 且 models.dev/清单未收录该提供方`
-              : String(e?.message ?? e)
+            const reason = String(e?.message ?? e)
+            // 回退只认「同名 provider 键」：models.dev 里没有该路由、内置清单也没有条目时，
+            // 就没有任何 id 可用（全局名字级回退只能在**已有 id 列表**上逐条匹配，不能凭空
+            // 造出模型号）。此时必须把原因说清楚，否则前端只显示"获取到 0 个模型"。
+            const warn = ids.length === 0
+              ? `${reason}；models.dev 未收录提供方「${route}」、内置清单也没有它的模型，无法离线兜底。请检查该路由的 baseURL / 协议（Anthropic 协议路由的模型清单通常在 /v1/models）`
+              : `${reason}；已回退 models.dev / 内置清单（${ids.length} 条），能力元数据可能滞后`
             const fallbackMerged = mergeDiscovered(route, ids, defaults, modelsDev)
             return json(res, 200, {
               ok: true, models: shape(fallbackMerged), raw: fallbackMerged,
-              source: 'fallback', fromManifestOnly: ids.length > 0, warn: catalogWarn,
+              source: 'fallback', fromManifestOnly: ids.length > 0, warn,
               route, ns: target?.ns ?? 'llm-pi-ai', target: target?.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
               modelsDevLoaded: mdDiag.loaded, modelsDevProviders: mdDiag.providers,
               modelsDevError: mdDiag.error, providerInModelsDev: !!modelsDev?.[route],

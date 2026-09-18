@@ -122,6 +122,9 @@ body[data-ds-dark-theme] .mc-root { color-scheme: dark; }
 /* ── alerts（正文用主文字色保证可读，状态色只放在图标与边框上） ── */
 .mc-alert { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; border-radius: 10px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary); border: 0.5px solid transparent; }
 .mc-alertIcon { flex: none; width: 16px; text-align: center; font-size: 13px; line-height: 18px; }
+/* 告警正文可能很长（线上拉取失败原因带 URL）：min-width:0 才能收缩，overflow-wrap
+   允许长 URL 断行，否则窄面板下这个 flex 子项会把容器撑破（见 AGENTS.md 布局硬约束）。 */
+.mc-alertText { min-width: 0; overflow-wrap: anywhere; }
 .mc-alert-info { background: var(--dsw-alias-state-business-tertiary); border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent); }
 .mc-alert-info .mc-alertIcon { color: var(--dsw-alias-state-business-primary); }
 .mc-alert-ok { background: var(--dsw-alias-state-success-tertiary); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 36%, transparent); }
@@ -136,6 +139,8 @@ body[data-ds-dark-theme] .mc-root { color-scheme: dark; }
 .mc-count { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 12px; font-size: 12px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
 .mc-count b { font-weight: 600; }
 .mc-count-models-dev { background: var(--dsw-alias-state-business-tertiary); color: var(--dsw-alias-state-business-primary); }
+/* 线上声明（端点自报的容量/模态）比 models.dev 快照更权威，用 success 淡底区分 */
+.mc-count-provider { background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-state-success-primary); }
 .mc-count-manifest { background: var(--dsw-alias-interactive-bg-hover-solid); color: var(--dsw-alias-label-secondary); }
 .mc-count-default { background: var(--dsw-alias-state-warn-tertiary); color: var(--dsw-alias-state-warn-label); }
 /* 未收录提示：黄色 ⚠ 图标，悬停说明 */
@@ -176,6 +181,7 @@ body[data-ds-dark-theme] .mc-root { color-scheme: dark; }
 /* ── source badge ── */
 .mc-src { display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 10px; font-size: 11px; line-height: 16px; }
 .mc-src-models-dev { background: var(--dsw-alias-state-business-tertiary); color: var(--dsw-alias-state-business-primary); }
+.mc-src-provider { background: var(--dsw-alias-state-success-tertiary); color: var(--dsw-alias-state-success-primary); }
 .mc-src-manifest { background: var(--dsw-alias-interactive-bg-hover-solid); color: var(--dsw-alias-label-secondary); }
 .mc-src-default { background: var(--dsw-alias-state-warn-tertiary); color: var(--dsw-alias-state-warn-label); }
 

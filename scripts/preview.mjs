@@ -94,12 +94,14 @@ ${css}
 
     ${MODE === 'discover' ? `
     <div class="mc-counts">
+      <span class="mc-count mc-count-provider">线上声明 <b>4</b></span>
       <span class="mc-count mc-count-models-dev">models.dev <b>2</b></span>
       <span class="mc-count mc-count-manifest">清单 <b>1</b></span>
       <span class="mc-count mc-count-default">默认 <b>1</b></span>
       <span class="mc-countNote" title="models.dev 未收录该提供方">⚠</span>
     </div>
-    <div class="mc-alert mc-alert-warn"><span class="mc-alertIcon">⚠</span><span>models.dev 加载失败，能力仅靠清单/默认</span></div>` : `
+    <div class="mc-alert mc-alert-warn"><span class="mc-alertIcon">⚠</span><span>models.dev 加载失败，能力仅靠清单/默认</span></div>
+    <div class="mc-alert mc-alert-warn"><span class="mc-alertIcon">⚠</span><span class="mc-alertText">GET http://127.0.0.1:8045/models 失败: HTTP 404；GET http://127.0.0.1:8045/v1/models 失败: HTTP 404；models.dev 未收录提供方「antigravity」、内置清单也没有它的模型，无法离线兜底。请检查该路由的 baseURL / 协议（Anthropic 协议路由的模型清单通常在 /v1/models）</span></div>` : `
     <section class="mc-panel mc-panelSub">
       <div class="mc-panelHead"><span class="mc-panelTitle">路由级设置</span><span class="mc-panelSubNote">对所有模型生效</span></div>
       <div class="mc-row">
