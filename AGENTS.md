@@ -168,8 +168,40 @@
 - 常用 `type`：`feat` / `fix` / `docs` / `refactor` / `perf` / `test` / `build` / `chore`。
 - `subject` 用中文、简短、祈使句（如「修复 XXX」「增加 XXX」）；破坏性变更加 `!` 或 `BREAKING CHANGE:` 说明。
 
-## 发布（若新增发布)
+## 发布（实际流程）
 
-- 发布前：`npm run typecheck`（host）+ `npm run build:client`（client）+ `npm run verify`（回归）务必通过。
-- `npm pack` 打包发布包（`*.tgz` 已被 `.gitignore` 忽略）；`lib/` 亦被忽略，不上传源码仓库。
+1. **bump 版本**：改 `package.json` 的 `version` → 提交 `chore(release): 发布 X.Y.Z`
+2. **推送 + 打轻量 tag**（与既有 `v0.0.x` 一致）：
+   ```sh
+   git push origin main && git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+3. **写发布说明** `.preview/release-notes-X.Y.Z.md`（`.preview/` 已 gitignore，不进仓库）。
+   风格照 0.0.5 / 0.0.6：一句话总述 → `### 修复` / `### 变更` / `### 实测` / `### 开发侧` /
+   `### 安装·升级` / `### 校验`。
+4. **打包 + 建 GitHub Release**（tgz 作为附件，自 v0.0.5 起如此）：
+   ```sh
+   npm pack          # 触发 prepack：自动 build + verify，绝不会发出未构建的 lib/
+   gh release create vX.Y.Z --title "dsh-model-detector vX.Y.Z" \
+     --notes-file .preview/release-notes-X.Y.Z.md dsh-model-detector-X.Y.Z.tgz
+   ```
+5. **npm 发布**（本仓库不代发，由维护者执行）：
+   ```sh
+   npm login && npm publish      # 开了 2FA 就加 --otp=123456
+   npm view dsh-model-detector dist-tags    # latest 应指向新版本
+   ```
+   发布前建议 `npm publish --dry-run` 预检（期望 17 files / ~216 KB / 含 `lib/*.js`）。
+
+- `prepack` 已挂 `build + verify`，所以 `npm pack` / `npm publish` 都不会漏构建；
+  **`lib/` 与 `*.tgz` 都在 .gitignore 里 —— 只随包发布，不进仓库**。
+- 发布前务必 `npm run verify`（host 回归，覆盖 antigravity / WorkBuddy / 线上声明 / 编辑页建议值四段）。
+
+> ⚠️ **client 半区不参与类型检查**：`tsconfig.json` 只 include host 三个文件并 `exclude: src/client`
+> （client 由 tsdown 打包），因此 `exports["./client"].types` 指向的 `lib/types/client/index.d.ts`
+> **不会产出**。这**不是本仓库的 bug**：DSH 官方的 43 个 `dsh-client-ui-*` 插件同样声明了该路径、
+> 也全部没有产出（实测 0/43），且 `dsh-client-modules` 解析 `exports["./client"]` 时只读
+> string / `default` 形式，运行时不看 types。**保持与官方模板一致**，不要单独改 exports；
+> 也不要贸然给 client 半区开 tsc（缺 dom lib、缺 peer 类型、`res.json()` 无类型，会一次冒出 30+ 错误）。
+
+> ⚠️ **改 `styles.ts` 的 CSS 注释别写反引号**：CSS 是 JS 模板字符串，反引号会截断整段样式
+> （`scripts/preview.mjs` 有专门检查会直接报错拦下）。
 
