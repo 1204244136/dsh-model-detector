@@ -45,12 +45,17 @@
   // 回退拿不到任何 id（该路由既不在 models.dev、也不在清单）时返回 0 条 + warn（前端必须显示原因）
 
 /current(route) → 现有模型（profile models/modelOverrides + 适配器目录）+ 建议值
+  // 也会**尽力而为**地拉一次线上清单，把端点声明喂给建议值（失败即忽略，不影响可用性）；
+  // 声明**按精确 id** 匹配：`cn:x` 与 `global:x` 是不同部署、能力可能不同（实测一个三档一个一档），
+  // 按名字级等效混用会把一个变体的能力安到另一个头上
 /save-model → writeModel（就地合并该条；pi-ai 目录路由无 models 列表时写 modelOverrides）
 ```
 
 ## 元数据来源（切勿回到"人工逐模型维护"）
 
 0. **线上声明**（`DeclaredModel`）——**端点自己在 `/models` 里声明的能力值，优先级最高**。`fetchLiveModels()` 逐条解析 `context_length`/`context_window`/`max_allowed_size`、`max_output_tokens`/`max_completion_tokens`、`supports_images`/`vision`（**显式的 `false` 也算声明**："本端点不收图"）、`supports_reasoning`、`reasoning_supported_efforts`、`name`。为什么压过 models.dev：这是端点对自己能力的陈述，而 models.dev 是第三方快照（可能滞后，也可能抄的是别家网关的乐观值——实测 `cn:deepseek-v4-flash` 被 models.dev 写成 `maxTokens=384000`，端点自己声明 `max_output_tokens: 50000`，照 384000 发请求会被上游拒）。WorkBuddy 的 65 条全靠它才 100% 命中（含 models.dev 根本没有的 `hy4-preview-f`/`hy3-x`/`cn:auto`/`-volc`/`-lkeap` 变体）。**逐字段生效**：端点没声明的字段仍按下面的顺序回落；只声明 `id/object/created/owned_by` 的路由（如 antigravity）行为完全不变。来源标注为 `provider`（UI 显示「线上声明」）。
+   - **两条链路都必须用它**：`/discover`（`mergeDiscovered`）与 `/current`（`currentModels` → `suggestionFor`）。编辑页曾经只看 models.dev，于是把 `maxTokens` 建议成 384000（端点上限 128000），用户点「采纳」就写坏——**新增数据源时务必同时接进编辑页**。
+   - **`/current` 侧按精确 id 匹配**（`Map<id, DeclaredModel>`），不做名字级等效：`cn:x` 与 `global:x` 是不同部署、能力可能不同（实测 `cn:deepseek-v4.1-flash` 支持 low/high/max、`global:` 只有 high）。用等效匹配会把一个变体的能力安到另一个头上。
 1. **models.dev**（`https://models.dev/api.json`，`loadModelsDev()` 缓存一次/会话）——自动、覆盖几乎所有提供方、含模态/容量/推理；端点不声明时的主源。
 2. **内置 manifest**（`src/manifest.ts`，薄覆盖层）——只兜底 models.dev 缺/错的个别模型（如 `hy3-preview`、内测模型）；按提供方 keyed，可扩展。`catalog` 字段是"适配器默认目录"（deepseek-official 的三条），用于编辑页列出。
 3. **家族模态推断**（`inferFamilyInput()`）——清单里完全没有该模型号时，若同族条目声明了 image 则继承模态（内测/预发布模型）。宁可保守也不按名字里的 `vision` 字样猜。
@@ -76,9 +81,9 @@
 
 ## 构建（务必注意）
 
-`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（`hy4-preview-f` 回归）/ 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
+`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（发现链路 `hy4-preview-f` + 编辑页建议值按精确 id 区分变体）/ 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
 
-> 改动 `api.ts` / `manifest.ts` 后**务必跑 `npm run build && npm run verify`**：`verify.mjs` 覆盖的就是最容易回归的几处（内测模型号必须拿到 image 模态；`/models` 拉不到时必须试 `/v1/models`；`-high/-low/-tiered` 档位变体与 `cn:`/`global:` 区域前缀必须富化而不是落默认；`supports_images=false` 必须当纯文本声明；**线上声明必须压过 models.dev 且逐字段回落**；归一化同名必须压过"上一代更丰富"候选；`upstream` 与多数派必须压过单家网关乐观值；写入字段必须落在各自 schema 白名单内）。
+> 改动 `api.ts` / `manifest.ts` 后**务必跑 `npm run build && npm run verify`**：`verify.mjs` 覆盖的就是最容易回归的几处（内测模型号必须拿到 image 模态；`/models` 拉不到时必须试 `/v1/models`；`-high/-low/-tiered` 档位变体与 `cn:`/`global:` 区域前缀必须富化而不是落默认；`supports_images=false` 必须当纯文本声明；**线上声明必须压过 models.dev 且逐字段回落、编辑页建议值也必须用它**；`cn:`/`global:` 同名变体的建议值不得互相污染；归一化同名必须压过"上一代更丰富"候选；`upstream` 与多数派必须压过单家网关乐观值；写入字段必须落在各自 schema 白名单内）。
 
 > ✅ `scripts/build.mjs` **自动探测 tsc**：优先本地 `node_modules/typescript`，否则回退 DSH checkout 的 tsc（`$DSH_CHECKOUT` 或 `~/Documents/GitHub/deepseek-harness`）——**不再依赖 bash，也不需要本地 TypeScript**。
 

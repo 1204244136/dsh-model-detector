@@ -394,8 +394,11 @@ function parseModelList(json: any): DeclaredModel[] {
  * 而本函数正是在没有协议信息的情况下猜端点，多带一个头比"猜错协议直接失败"更划算。
  * 所有候选都失败时抛错并在消息里列出每个候选的失败原因（供 /discover 的诊断透出）。
  * 返回值保留端点声明的元数据（见 {@link DeclaredModel}）。
+ *
+ * **必须有超时**：本地代理/网关挂住时（半开连接、不返响应）没有超时会让调用方一直等，
+ * 编辑页会卡在「正在读取现有模型…」。默认 10s，可用 `timeoutMs` 覆盖。
  */
-export async function fetchLiveModels(baseURL: string, apiKey?: string): Promise<DeclaredModel[]> {
+export async function fetchLiveModels(baseURL: string, apiKey?: string, timeoutMs = 10000): Promise<DeclaredModel[]> {
   const headers: Record<string, string> = { accept: 'application/json' }
   if (apiKey && apiKey.length > 0) {
     headers.authorization = `Bearer ${apiKey}`
@@ -404,11 +407,16 @@ export async function fetchLiveModels(baseURL: string, apiKey?: string): Promise
   const errors: string[] = []
   for (const url of liveModelsUrls(baseURL)) {
     let res: any
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
     try {
-      res = await fetch(url, { headers })
+      res = await fetch(url, { headers, signal: ctrl.signal })
     } catch (e: any) {
-      errors.push(`GET ${url} 失败: ${String(e?.message ?? e)}`)
+      const aborted = ctrl.signal.aborted
+      errors.push(`GET ${url} 失败: ${aborted ? `超时（${timeoutMs}ms）` : String(e?.message ?? e)}`)
       continue
+    } finally {
+      clearTimeout(timer)
     }
     if (!res.ok) { errors.push(`GET ${url} 失败: HTTP ${res.status}`); continue }
     let json: any
@@ -1038,8 +1046,8 @@ export interface EditableModel {
   current: Record<string, unknown>
   /** 建议值（models.dev + 清单），UI 用「采纳」按钮回填。 */
   suggested: Record<string, unknown>
-  /** 建议值来源：models-dev / manifest / catalog / 无。 */
-  suggestedSource: 'models-dev' | 'manifest' | 'catalog' | ''
+  /** 建议值来源：provider（线上声明）/ models-dev / manifest / catalog / 无。 */
+  suggestedSource: 'provider' | 'models-dev' | 'manifest' | 'catalog' | ''
   /** 备注（如「内测模型」）。 */
   note?: string
   /** 是否由用户显式写在 profile 里（false = 适配器默认目录就有的模型）。 */
@@ -1060,12 +1068,19 @@ function suggestionFromManifest(mf: ManifestModel): Record<string, unknown> {
   }
 }
 
-/** 取某路由的「建议元数据」：models.dev 优先，其次内置清单，再次目录清单。 */
+/**
+ * 取某路由的「建议元数据」：**线上声明 > models.dev > 内置清单 > 目录清单**。
+ *
+ * `declared` 必须是**按精确 id** 取的端点声明表（不能用名字级等效）：`cn:x` 与 `global:x`
+ * 是两个不同部署，声明可能不同（实测 `cn:deepseek-v4.1-flash` 支持 low/high/max 三档、
+ * `global:` 只有 high），按名字混用会把一个变体的能力安到另一个头上。
+ */
 function suggestionFor(
   route: string,
   id: string,
   modelsDev: Record<string, any>,
   catalog: Record<string, ManifestModel> | undefined,
+  declared?: DeclaredModel,
 ): { suggested: Record<string, unknown>; source: EditableModel['suggestedSource']; note?: string } {
   const mp = manifestProvider(route)
   const provDev = modelsDev?.[route]
@@ -1073,21 +1088,26 @@ function suggestionFor(
     ?? upstreamModelsDevModel(mp, modelsDev, id) ?? globalModelsDevModel(modelsDev, id)
   const mf = mp?.models[id] ?? (mp ? findByName(mp.models, id) : undefined)
   const cat = catalog?.[id] ?? (catalog ? findByName(catalog, id) : undefined)
-  if (md) {
-    const input = normalizeInput(md?.modalities?.input)
-    return {
-      suggested: {
-        name: md?.name,
-        contextWindow: md?.limit?.context,
-        maxTokens: md?.limit?.output,
-        input,
-        reasoning: md?.reasoning,
-        ...(reasoningEffortsFromModelsDev(md) ? { reasoningEfforts: reasoningEffortsFromModelsDev(md) } : {}),
-      },
-      source: 'models-dev',
-      note: mf?.note,
-    }
+  // 端点声明的能力字段：与 mergeDiscovered 同口径，逐字段优先，未声明的字段才回落
+  const declaredCapability = declared !== undefined && (
+    declared.contextWindow !== undefined || declared.maxTokens !== undefined
+    || declared.input !== undefined || declared.reasoningEfforts !== undefined || declared.reasoning !== undefined
+  )
+  const mdInput = normalizeInput(md?.modalities?.input)
+  const mdEfforts = reasoningEffortsFromModelsDev(md)
+  const suggested: Record<string, unknown> = {
+    name: declared?.name ?? md?.name ?? mf?.name ?? cat?.name,
+    contextWindow: declared?.contextWindow ?? md?.limit?.context ?? mf?.contextWindow ?? cat?.contextWindow,
+    maxTokens: declared?.maxTokens ?? md?.limit?.output ?? mf?.maxTokens ?? cat?.maxTokens,
+    input: declared?.input ?? mdInput ?? mf?.input ?? cat?.input,
+    reasoning: declared?.reasoning ?? md?.reasoning ?? mf?.reasoning ?? cat?.reasoning,
   }
+  const efforts = declared?.reasoningEfforts ?? mdEfforts
+    ?? (mf?.thinkingLevelMap ? reasoningEffortsFromManifest(mf.thinkingLevelMap) : undefined)
+    ?? (cat?.thinkingLevelMap ? reasoningEffortsFromManifest(cat.thinkingLevelMap) : undefined)
+  if (efforts) suggested.reasoningEfforts = efforts
+  if (declaredCapability) return { suggested, source: 'provider', note: mf?.note }
+  if (md) return { suggested, source: 'models-dev', note: mf?.note }
   if (mf) return { suggested: suggestionFromManifest(mf), source: 'manifest', note: mf.note }
   if (cat) return { suggested: suggestionFromManifest(cat), source: 'catalog', note: cat.note }
   return { suggested: {}, source: '' }
@@ -1097,22 +1117,28 @@ function suggestionFor(
  * 列出某路由的「现有模型」用于手动编辑：
  *  - profile 里已显式配置的模型（`models` 列表 / pi-ai 的 `modelOverrides`）
  *  - 适配器默认目录就有的模型（llm-deepseek 的内置三条 / pi-ai catalog 条目）
- * 每条都带上 models.dev/清单的建议值，UI 可一键采纳。
+ * 每条都带上**线上声明 / models.dev / 清单**的建议值，UI 可一键采纳。
+ *
+ * `declared`（可选）是端点自声明的模型表，**按精确 id 匹配**：`cn:` 与 `global:` 是不同
+ * 部署、声明可能不同，绝不能按名字级等效混用。没有它时行为与旧版一致（只靠 models.dev）。
  */
 export async function currentModels(
   st: SettingsService | undefined,
   route: string,
   modelsDev: Record<string, any>,
+  declared?: DeclaredModel[],
 ): Promise<{ target: RouteTarget | undefined; models: EditableModel[]; reasoningEffort?: string; thinking?: string }> {
   const target = resolveTarget(route, st)
   if (target === undefined) return { target: undefined, models: [] }
   const catalog = await catalogFor(route, target.mp)
+  const declaredById = new Map<string, DeclaredModel>()
+  for (const d of declared ?? []) if (d?.id) declaredById.set(d.id, d)
   const out: EditableModel[] = []
   const seen = new Set<string>()
   const push = (id: string, current: Record<string, unknown>, configured: boolean, inCatalog?: boolean) => {
     if (!id || seen.has(id)) return
     seen.add(id)
-    const { suggested, source, note } = suggestionFor(route, id, modelsDev, catalog)
+    const { suggested, source, note } = suggestionFor(route, id, modelsDev, catalog, declaredById.get(id))
     out.push({ id, current, suggested, suggestedSource: source, note, configured, ...(inCatalog === undefined ? {} : { inCatalog }) })
   }
   if (target.ns === 'llm-deepseek') {

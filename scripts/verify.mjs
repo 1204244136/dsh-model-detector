@@ -171,6 +171,52 @@ ok('name 与 id 相同则不伪造 name', M.declaredFromRaw({ id: 'y', name: 'y'
 const hy = M.mergeDiscovered('wb', [{ id: 'cn:hy4-preview-f', contextWindow: 1000000, maxTokens: 64000, input: ['text', 'image'], reasoningEfforts: { high: 'high' } }], { baseURL: 'x' }, {})[0]
 ok('models.dev 无条目也能靠线上声明富化（hy4-preview-f）', hy.source === 'provider' && hy.contextWindow === 1000000 && hy.maxTokens === 64000 && hy.input.join() === 'text,image', JSON.stringify(hy))
 
+console.log('\n②e 编辑页建议值也必须用线上声明（且按精确 id 区分变体）')
+// 真实场景：WorkBuddy 的 cn:/global: 是不同部署，声明不同；models.dev 会把两者都写成
+// 384000/{off,low,medium,high,max}，点「采纳」就超出端点真实上限（128000）。
+const declEdit = [
+  { id: 'cn:deepseek-v4.1-flash', contextWindow: 1000000, maxTokens: 128000, input: ['text', 'image'], reasoningEfforts: { low: 'low', high: 'high', max: 'max' } },
+  { id: 'global:deepseek-v4.1-flash', contextWindow: 1000000, maxTokens: 128000, input: ['text', 'image'], reasoningEfforts: { high: 'high' } },
+]
+const mdEdit = {
+  wb: { models: {} },
+  tee: { models: { 'deepseek-v4.1-flash': { name: 'DeepSeek V4.1 Flash TEE', modalities: { input: ['text', 'image'] }, limit: { context: 1048576, output: 384000 }, reasoning: true, reasoning_options: [{ type: 'effort', values: ['none', 'low', 'medium', 'high', 'max'] }] } } },
+}
+const stEdit = makeSettings({
+  'llm-pi-ai': {
+    providers: {
+      wb: {
+        api: 'openai-completions', baseURL: 'http://127.0.0.1:7863/v1',
+        models: [{ id: 'cn:deepseek-v4.1-flash' }, { id: 'global:deepseek-v4.1-flash' }],
+      },
+    },
+  },
+})
+const curD = await M.currentModels(stEdit, 'wb', mdEdit, declEdit)
+const cnD = curD.models.find((m) => m.id === 'cn:deepseek-v4.1-flash')
+const glD = curD.models.find((m) => m.id === 'global:deepseek-v4.1-flash')
+eq('建议值来源 = provider', cnD?.suggestedSource, 'provider')
+eq('建议输出上限用端点声明（128000，不是 models.dev 的 384000）', cnD?.suggested.maxTokens, 128000)
+eq('cn 变体拿到三档', cnD?.suggested.reasoningEfforts, { low: 'low', high: 'high', max: 'max' })
+eq('global 变体只拿到一档（按精确 id，不被 cn 污染）', glD?.suggested.reasoningEfforts, { high: 'high' })
+ok('两个变体的建议值确实不同', JSON.stringify(cnD?.suggested.reasoningEfforts) !== JSON.stringify(glD?.suggested.reasoningEfforts))
+// 不传声明 → 回落 models.dev（旧行为），证明新参数是可选、向后兼容的
+const curNoD = await M.currentModels(stEdit, 'wb', mdEdit)
+eq('不传声明时回落 models.dev', curNoD.models.find((m) => m.id === 'cn:deepseek-v4.1-flash')?.suggestedSource, 'models-dev')
+
+// 挂住的端点必须有超时：编辑页会调它，没超时就会卡在「正在读取现有模型…」
+const { createServer } = await import('node:http')
+const hangSrv = createServer(() => { /* 故意不响应 */ })
+await new Promise((r) => hangSrv.listen(0, '127.0.0.1', r))
+const hangPort = hangSrv.address().port
+const t0 = Date.now()
+let hangMsg = ''
+try { await M.fetchLiveModels(`http://127.0.0.1:${hangPort}`, 'k', 300) } catch (e) { hangMsg = String(e?.message ?? e) }
+const hangMs = Date.now() - t0
+hangSrv.close()
+ok('挂住的端点会超时而不是一直等', hangMs < 3000, `${hangMs}ms`)
+ok('超时错误信息可读', hangMsg.includes('超时'), hangMsg)
+
 console.log('\n③ 目标形状转换')
 const shaped = merged.map((m) => M.toTargetModel('llm-deepseek', m)).find((m) => m.id === 'deepseek-v4.1-flash-expires-on-0910')
 eq('deepseek 形状用 inputModalities', shaped?.inputModalities, ['text', 'image'])

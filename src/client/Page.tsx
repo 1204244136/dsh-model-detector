@@ -64,15 +64,15 @@ interface DiscoveredModel {
   reasoning?: boolean
   /** 思考档位 → wire 值（models.dev / 清单声明，按模型不同）；写回 profile 后 DSH 可设推理等级。 */
   reasoningEfforts?: Record<string, string | null>
-  /** 来源：models.dev / 内置清单 / 保守默认（未查到）。 */
-  source?: 'models-dev' | 'manifest' | 'default'
+  /** 来源：线上声明 / models.dev / 内置清单 / 保守默认（未查到）。 */
+  source?: 'provider' | 'models-dev' | 'manifest' | 'default'
 }
 
 interface EditableModel {
   id: string
   current: Record<string, any>
   suggested: Record<string, any>
-  suggestedSource: '' | 'models-dev' | 'manifest' | 'catalog'
+  suggestedSource: '' | 'provider' | 'models-dev' | 'manifest' | 'catalog'
   note?: string
   configured: boolean
   inCatalog?: boolean
@@ -88,6 +88,10 @@ interface CurrentInfo {
   thinking?: string
   writable: boolean
   models: EditableModel[]
+  /** 本次为建议值拉到的线上声明条数（0 = 没拉到，建议值只来自 models.dev）。 */
+  declaredCount?: number
+  /** 线上清单拉取失败的原因（编辑页据此提示"建议值可能偏乐观"）。 */
+  declaredWarn?: string
 }
 
 /** 一条编辑草稿：UI 直接绑定这些字段。 */
@@ -262,7 +266,11 @@ export function ModelCatalogPage(): React.ReactElement {
         const next: Record<string, Draft> = {}
         for (const m of info.models) next[m.id] = toDraft(m.id, m.current, info.target)
         setDrafts(next)
-        setStatus({ ok: true, text: `共 ${info.models.length} 个模型（${info.target === 'deepseek' ? 'DeepSeek 官方 API' : 'pi-ai'} · 写入 ${info.ns}）` })
+        // 建议值来源要如实告知：拉到线上声明时以它为准，拉不到就只剩 models.dev（可能偏乐观）
+        const src = (info.declaredCount ?? 0) > 0
+          ? `；建议值优先用线上声明（${info.declaredCount} 条）`
+          : info.declaredWarn ? '；未取到线上声明，建议值仅来自 models.dev' : ''
+        setStatus({ ok: true, text: `共 ${info.models.length} 个模型（${info.target === 'deepseek' ? 'DeepSeek 官方 API' : 'pi-ai'} · 写入 ${info.ns}）${src}` })
       } else {
         setStatus({ ok: false, text: j?.error || '读取现有模型失败' })
         setCur(null)

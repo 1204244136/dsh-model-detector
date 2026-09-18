@@ -142,7 +142,28 @@ export function apply(ctx: Context, config: Config): void {
           const route = typeof body?.route === 'string' ? body.route : ''
           if (!route) return json(res, 400, { ok: false, error: '缺少 route' })
           const modelsDev = await loadModelsDev()
-          const r = await currentModels(st, route, modelsDev)
+          // 顺带拉一次线上清单，把端点自声明喂给建议值（编辑页此前只看 models.dev，
+          // 会把 maxTokens 建议成比端点真实上限更大的值 —— 点「采纳」就写坏）。
+          // 尽力而为：任何失败都退回旧行为，不影响编辑页可用性。
+          const target0 = resolveTarget(route, st)
+          const p0 = target0?.profile
+          let declared: Awaited<ReturnType<typeof fetchLiveModels>> | undefined
+          let declaredWarn: string | undefined
+          const baseURL0 = target0?.baseURL || (typeof p0?.baseURL === 'string' ? p0.baseURL : '')
+          if (baseURL0) {
+            let apiKey0 = ''
+            const env0 = (typeof p0?.apiKeyEnv === 'string' && p0.apiKeyEnv) || target0?.apiKeyEnv || ''
+            const creds0 = host.get('credentials') as any
+            if (env0 && creds0 && typeof creds0.resolve === 'function') {
+              try { const hit = await creds0.resolve(env0); if (hit?.value) apiKey0 = hit.value } catch { /* 忽略 */ }
+            }
+            // 编辑页的声明是"锦上添花"，用更短的超时（3.5s）：拉不到就退回 models.dev，
+            // 不能让本地代理挂住时把「读取现有模型」一起拖死。
+            try { declared = await fetchLiveModels(baseURL0, apiKey0, 3500) } catch (e: any) {
+              declaredWarn = String(e?.message ?? e)
+            }
+          }
+          const r = await currentModels(st, route, modelsDev, declared)
           if (r.target === undefined) return json(res, 400, { ok: false, error: `未找到提供方 ${route}` })
           return json(res, 200, {
             ok: true,
@@ -155,6 +176,8 @@ export function apply(ctx: Context, config: Config): void {
             reasoningLevels: routeReasoningLevels(r.target.ns),
             ...(r.reasoningEffort !== undefined ? { reasoningEffort: r.reasoningEffort, thinking: r.thinking } : {}),
             models: r.models,
+            declaredCount: declared?.length ?? 0,
+            ...(declaredWarn !== undefined ? { declaredWarn } : {}),
             writable: st?.writable !== false,
           })
         }
