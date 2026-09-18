@@ -82,11 +82,15 @@
 - **跨 realm 写 settings**：静态 bundle 运行在宿主 sandbox realm，`settings.get` 拿到的是深冻结对象。写入必须用 `makeHostPlain`（`Object.create(null)` 递归重建）重建后再 `settings.replace(...)`，否则 dsh-settings 的 `isPlainObject` 检查会拒绝。参考 dsh-model-pro。
 - **apply 补 api/baseURL**：目录/模板提供方的 profile 可能没显式 `api`/`baseURL`（继承 pi-ai 目录）。写入前用 `manifestProvider(route)` 兜底补齐，否则目录外的新模型（如 vision-exp）会因目录协议不统一而 `resolveRouteModels` 校验失败。
 - **前端口径**：每页 80 行、结果 ≤200 才自动全选（海量防卡顿）、搜索 300ms 防抖。改这些常量在 `src/client/Page.tsx`（`PAGE_SIZE`/`AUTO_SELECT_LIMIT`）。
-- **`api.ts` 不得顶层 import `node:fs`**：client 半区也会 import 本模块的纯函数，顶层 node 内置模块会污染浏览器 bundle。用 `await import('node:fs')`（`loadPiAiCatalog` 是 async）。
+- **「编辑现有模型」的草稿不变式（血泪）**：每张卡片各自持有一份草稿，`dirty` = 草稿 vs 服务端。所以**保存/删除某一条之后，只能用服务端返回值重同步那一条**（`loadCurrent({ syncIds: [id], quiet: true })`），绝不能整体重建 `drafts`——那会把其它卡片上还没保存的编辑**悄悄丢掉**，而 dirty 随之变假，于是所有按钮一起显示「已保存」，用户以为都存进去了（真的发生过，用户报的就是这个）。草稿逻辑集中在 `src/client/drafts.ts`（纯函数，便于回归），关键 API 的语义都写在各自 JSDoc 里：`mergeDrafts`（局部同步）、`draftIsDirty`（`draftOnly` 必须算脏，否则手填模型存不下去）、`canonicalDraft`（dirty 必须与用户操作顺序无关：efforts/input 顺序不同不算脏）。改这块务必跑 `npm run verify:client` + `npm run verify:client-dom`。
+- **异步响应的归属校验**：`loadCurrent` 用 `selRef` 比对请求发起时的 route，不匹配就整个丢弃——否则用户切了提供方后，慢响应会把上一家的模型写进当前视图的草稿表。
+- **`api.ts` 不得顶层 import `node:fs`**：client 半区也会 import 本模块的纯函数，顶层 node 内置模块会污染浏览器 bundle。用 `await import('node:fs')`（`loadPiAiCatalog` 是 async）。同理 `src/client/drafts.ts` **不得含 JSX / import React**：它要被 Node 直接 import 做回归（`.tsx` 跑不了）。
 
 ## 构建（务必注意）
 
 `npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（发现链路 `hy4-preview-f` + 编辑页建议值按精确 id 区分变体）/ 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
+`npm run verify:client` = `node scripts/verify-client.mjs`（**client 草稿逻辑回归**，直接 import `src/client/drafts.ts` 的纯函数：保存某条后其余卡片的未保存编辑必须保留、按钮不得误报「已保存」、手填模型必须可保存、dirty 与操作顺序无关、两套 schema 的提交形状；靠 Node 24 的 TS 类型擦除直接跑 `.ts`）；
+`npm run verify:client-dom` = `node scripts/verify-client-dom.mjs`（**真实渲染回归**：jsdom + 真实 React 渲染已构建的 `lib/client.js`，打桩 fetch 复现「改三条 → 只保存一条」，断言界面按钮文案与草稿未被冲掉；依赖 DSH checkout 的 jsdom/react，缺依赖时**跳过**不算失败）。
 
 > 改动 `api.ts` / `manifest.ts` 后**务必跑 `npm run build && npm run verify`**：`verify.mjs` 覆盖的就是最容易回归的几处（内测模型号必须拿到 image 模态；`/models` 拉不到时必须试 `/v1/models`；`-high/-low/-tiered` 档位变体与 `cn:`/`global:` 区域前缀必须富化而不是落默认；`supports_images=false` 必须当纯文本声明；**线上声明必须压过 models.dev 且逐字段回落、编辑页建议值也必须用它**；`cn:`/`global:` 同名变体的建议值不得互相污染；归一化同名必须压过"上一代更丰富"候选；`upstream` 与多数派必须压过单家网关乐观值；写入字段必须落在各自 schema 白名单内）。
 
@@ -107,9 +111,11 @@
 │   ├── index.ts        host：webServer API（providers/discover/current/save-model/remove-model/route-settings/apply）+ 状态工具
 │   ├── api.ts          命名空间解析/双 schema 写入/发现合并/手动编辑；models.dev 缓存；pi-ai 目录读取
 │   ├── manifest.ts     薄覆盖清单 + DeepSeek 官方目录（可扩展任意提供方）
-│   └── client/         React 设置页（Page.tsx / styles.ts / react.ts / index.ts），发现 + 编辑两模式
+│   └── client/         React 设置页（Page.tsx / drafts.ts / styles.ts / react.ts / index.ts），发现 + 编辑两模式
 ├── scripts/build.mjs   跨平台构建/类型检查（自动探测 tsc，无需 bash/本地 TypeScript）
 ├── scripts/verify.mjs  host 回归测试（npm run verify，假 settings 驱动 lib/）
+├── scripts/verify-client.mjs      client 草稿逻辑回归（npm run verify:client，直接跑 src/client/drafts.ts）
+├── scripts/verify-client-dom.mjs  client 真实渲染回归（npm run verify:client-dom，jsdom + lib/client.js）
 ├── scripts/preview.mjs 布局预览（真实 CSS + 同构 DOM → .preview/layout-<mode>-<theme>.html；FRAME_WIDTH/MODE/THEME 可调）
 └── scripts/build.sh    junction 依赖链接 + host tsc 构建（参考，build.mjs 的可选补充）
 ```
@@ -193,7 +199,8 @@
 
 - `prepack` 已挂 `build + verify`，所以 `npm pack` / `npm publish` 都不会漏构建；
   **`lib/` 与 `*.tgz` 都在 .gitignore 里 —— 只随包发布，不进仓库**。
-- 发布前务必 `npm run verify`（host 回归，覆盖 antigravity / WorkBuddy / 线上声明 / 编辑页建议值四段）。
+- 发布前务必 `npm run verify`（host 回归，覆盖 antigravity / WorkBuddy / 线上声明 / 编辑页建议值四段）；
+  动过 client 半区（尤其 `Page.tsx` 的保存/草稿逻辑或 `drafts.ts`）再加 `npm run verify:client && npm run verify:client-dom`。
 
 > ⚠️ **client 半区不参与类型检查**：`tsconfig.json` 只 include host 三个文件并 `exclude: src/client`
 > （client 由 tsdown 打包），因此 `exports["./client"].types` 指向的 `lib/types/client/index.d.ts`

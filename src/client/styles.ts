@@ -155,6 +155,8 @@ body[data-ds-dark-theme] .mc-root { color-scheme: dark; }
 .mc-pager { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }
 .mc-pageNow { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
 .mc-pageRange { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+/* 编辑模式「未保存 N 条」：提醒还有卡片没落盘（多条草稿并存时最容易漏） */
+.mc-unsaved { font-size: 12px; line-height: 16px; padding: 1px 8px; border-radius: 10px; white-space: nowrap; flex: none; margin-right: auto; background: var(--dsw-alias-state-warn-tertiary); color: var(--dsw-alias-state-warn-label); }
 
 /* ── model list（每模型一卡的卡片布局，自描述、不挤压） ── */
 .mc-list { display: flex; flex-direction: column; }

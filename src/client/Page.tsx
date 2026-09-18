@@ -11,15 +11,16 @@
  * 样式：复用 DSH 的 `--dsw-alias-*` token + capsule 按钮 + 发丝线卡片（styles.ts）。
  */
 import React from './react'
+import {
+  MODALITY, EFFORT_ORDER, toDraft, draftToModel, draftIsDirty, mergeDrafts, countDirty,
+} from './drafts'
+import type { Draft, EditableModel, TargetNs } from './drafts'
+
+export type { Draft, EditableModel } from './drafts'
 
 const API_PREFIX = '/dsh-model-detector/api'
 const PAGE_SIZE = 80
 const AUTO_SELECT_LIMIT = 200
-
-const MODALITY: Record<'text' | 'image', string> = { text: '文本', image: '图像' }
-
-/** pi-ai 思考档位（与 host 侧 THINKING_LEVELS 一致，升序），用于 UI 展示排序。 */
-const EFFORT_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
 /** 把 reasoningEfforts 格式化为可读档位串（如 `Low / High / Max`），无档位返回 undefined。 */
 const formatEfforts = (e?: Record<string, string | null>) => {
@@ -70,20 +71,10 @@ interface DiscoveredModel {
   credits?: string
 }
 
-interface EditableModel {
-  id: string
-  current: Record<string, any>
-  suggested: Record<string, any>
-  suggestedSource: '' | 'provider' | 'models-dev' | 'manifest' | 'catalog'
-  note?: string
-  configured: boolean
-  inCatalog?: boolean
-}
-
 interface CurrentInfo {
   route: string
   ns: string
-  target: 'pi-ai' | 'deepseek'
+  target: TargetNs
   hasModelsList: boolean
   reasoningLevels: string[]
   reasoningEffort?: string
@@ -95,70 +86,6 @@ interface CurrentInfo {
   /** 线上清单拉取失败的原因（编辑页据此提示"建议值可能偏乐观"）。 */
   declaredWarn?: string
 }
-
-/** 一条编辑草稿：UI 直接绑定这些字段。 */
-interface Draft {
-  id: string
-  name: string
-  contextWindow: string
-  maxTokens: string
-  /** pi-ai: text/image 声明；deepseek 走 inputModalities。 */
-  input: Array<'text' | 'image'>
-  /** pi-ai 专属：档位 → wire 值（'off' 档位用 '' 表示 null）。 */
-  efforts: Record<string, string>
-  /** pi-ai 专属：compat JSON 文本。 */
-  compatText: string
-  /** deepseek 专属。 */
-  description: string
-}
-
-const toDraft = (id: string, src: Record<string, any>, target: 'pi-ai' | 'deepseek'): Draft => {
-  const input = Array.isArray(src.input) ? src.input : Array.isArray(src.inputModalities) ? src.inputModalities : []
-  const efforts: Record<string, string> = {}
-  const raw = src.reasoningEfforts
-  if (raw && typeof raw === 'object') {
-    for (const k of EFFORT_ORDER) if (raw[k] !== undefined) efforts[k] = raw[k] === null ? '' : String(raw[k])
-  }
-  return {
-    id,
-    name: typeof src.name === 'string' ? src.name : '',
-    contextWindow: src.contextWindow ? String(src.contextWindow) : '',
-    maxTokens: src.maxTokens ? String(src.maxTokens) : '',
-    input: input.filter((x: any) => x === 'text' || x === 'image'),
-    efforts,
-    compatText: src.compat && typeof src.compat === 'object' ? JSON.stringify(src.compat) : '',
-    description: typeof src.description === 'string' ? src.description : '',
-  }
-}
-
-/** 草稿 → 提交给 host 的模型对象（按目标命名空间裁剪）。 */
-const draftToModel = (d: Draft, target: 'pi-ai' | 'deepseek'): Record<string, unknown> => {
-  const out: Record<string, unknown> = { id: d.id }
-  if (d.name) out.name = d.name
-  const ctx = Number(d.contextWindow)
-  if (Number.isFinite(ctx) && ctx > 0) out.contextWindow = Math.floor(ctx)
-  const mt = Number(d.maxTokens)
-  if (Number.isFinite(mt) && mt > 0) out.maxTokens = Math.floor(mt)
-  if (target === 'deepseek') {
-    if (d.description) out.description = d.description
-    out.inputModalities = d.input.length > 0 ? [...d.input] : ['text']
-    return out
-  }
-  if (d.input.length > 0) out.input = [...d.input]
-  const efforts: Record<string, string | null> = {}
-  for (const [k, v] of Object.entries(d.efforts)) {
-    if (k === 'off') { if (v === '') efforts.off = null; else efforts.off = v; continue }
-    if (v) efforts[k] = v
-  }
-  if (Object.keys(efforts).length > 0) out.reasoningEfforts = efforts
-  const txt = d.compatText.trim()
-  if (txt) {
-    try { out.compat = JSON.parse(txt) } catch { /* 非法 JSON 忽略，避免写坏配置 */ }
-  }
-  return out
-}
-
-const sameDraft = (a: Draft, b: Draft) => JSON.stringify(a) === JSON.stringify(b)
 
 export function ModelCatalogPage(): React.ReactElement {
   const [mode, setMode] = React.useState<'discover' | 'edit'>('discover')
@@ -177,6 +104,9 @@ export function ModelCatalogPage(): React.ReactElement {
   const [drafts, setDrafts] = React.useState<Record<string, Draft>>({})
   const [savingId, setSavingId] = React.useState('')
   const [newId, setNewId] = React.useState('')
+  /** 当前提供方路由的实时值：异步响应回来时用它判断"这份响应是否还属于当前视图"。 */
+  const selRef = React.useRef(sel)
+  selRef.current = sel
 
   const loadProviders = async () => {
     try {
@@ -253,37 +183,56 @@ export function ModelCatalogPage(): React.ReactElement {
     } finally { setBusy(false) }
   }
 
-  const loadCurrent = async () => {
+  /**
+   * 读取服务端现有模型。
+   *
+   * `opts.syncIds` 指定**以服务端为准重同步**的 id 列表（`undefined` = 全量重建，用于用户主动
+   * 「读取现有模型」/ 切换提供方）。保存/删除之后必须只同步**那一条**：整体重建会把其它卡片上
+   * 还没保存的编辑悄悄丢掉，而 dirty 是「草稿 vs 服务端」算出来的——于是那些卡片的按钮会一起
+   * 变成「已保存」，用户以为都存进去了。见 drafts.ts 的 mergeDrafts。
+   *
+   * `opts.quiet`（局部同步用）：不置 busy（否则整页按钮变灰）、不写 status（否则刚设的
+   * 「已保存 X」提示会被立刻清掉）。
+   */
+  const loadCurrent = async (opts: { syncIds?: string[]; quiet?: boolean } = {}) => {
     if (!sel) return
-    setBusy(true); setStatus(null); setModels([]); setSelected(new Set()); setPage(1); setQ(''); setDebouncedQ('')
+    const route = sel
+    const full = opts.syncIds === undefined
+    const quiet = opts.quiet === true
+    if (full) {
+      setBusy(true); setStatus(null); setModels([]); setSelected(new Set()); setPage(1); setQ(''); setDebouncedQ('')
+    } else if (!quiet) {
+      setStatus(null)
+    }
     try {
       const r = await fetch(`${API_PREFIX}/current`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ route: sel }),
+        body: JSON.stringify({ route }),
       })
       const j = await r.json()
+      // 期间用户切了提供方：这份响应已经不属于当前视图，丢弃（否则会把草稿写进别人家）
+      if (route !== selRef.current) return
       if (j?.ok) {
         const info = j as CurrentInfo
         setCur(info)
-        const next: Record<string, Draft> = {}
-        for (const m of info.models) next[m.id] = toDraft(m.id, m.current, info.target)
-        setDrafts(next)
+        // 局部同步：只重建 syncIds 里的条目，其余草稿原样保留
+        setDrafts((prev) => mergeDrafts(prev, info.models, info.target, opts.syncIds))
+        if (!full && quiet) return
         // 建议值来源要如实告知：拉到线上声明时以它为准，拉不到就只剩 models.dev（可能偏乐观）
         const src = (info.declaredCount ?? 0) > 0
           ? `；建议值优先用线上声明（${info.declaredCount} 条）`
           : info.declaredWarn ? '；未取到线上声明，建议值仅来自 models.dev' : ''
         setStatus({ ok: true, text: `共 ${info.models.length} 个模型（${info.target === 'deepseek' ? 'DeepSeek 官方 API' : 'pi-ai'} · 写入 ${info.ns}）${src}` })
       } else {
-        setStatus({ ok: false, text: j?.error || '读取现有模型失败' })
-        setCur(null)
+        if (!quiet) setStatus({ ok: false, text: j?.error || '读取现有模型失败' })
+        if (full) setCur(null)
       }
     } catch (e: any) {
-      setStatus({ ok: false, text: `读取现有模型失败: ${String(e?.message ?? e)}` })
-      setCur(null)
-    } finally { setBusy(false) }
+      if (route !== selRef.current) return
+      if (!quiet) setStatus({ ok: false, text: `读取现有模型失败: ${String(e?.message ?? e)}` })
+      if (full) setCur(null)
+    } finally { if (full) setBusy(false) }
   }
-
-  const reload = () => { if (mode === 'edit') void loadCurrent(); else void discover() }
 
   const apply = async () => {
     if (!sel) return
@@ -331,7 +280,8 @@ export function ModelCatalogPage(): React.ReactElement {
       })
       const j = await r.json()
       setStatus(j?.ok ? { ok: true, text: `已保存 ${j.id}（写入 ${j.ns}${j.key ? '.' + j.key : ''}）` } : { ok: false, text: j?.error || '保存失败' })
-      if (j?.ok) { void loadProviders(); void loadCurrent() }
+      // 只重同步这一条：整体重建会丢掉其它卡片上未保存的编辑，并让它们的按钮假装「已保存」
+      if (j?.ok) { void loadProviders(); void loadCurrent({ syncIds: [m.id], quiet: true }) }
     } catch (e: any) {
       setStatus({ ok: false, text: `保存失败: ${String(e?.message ?? e)}` })
     } finally { setSavingId('') }
@@ -346,7 +296,8 @@ export function ModelCatalogPage(): React.ReactElement {
       })
       const j = await r.json()
       setStatus(j?.ok ? { ok: j.removed, text: j.removed ? `已从 ${j.from} 删除 ${m.id}` : `${m.id} 不在配置里（可能来自适配器默认目录）` } : { ok: false, text: j?.error || '删除失败' })
-      if (j?.ok && j.removed) { void loadProviders(); void loadCurrent() }
+      // 只重同步这一条：服务端已无此 id → mergeDrafts 把它从草稿表里移除
+      if (j?.ok && j.removed) { void loadProviders(); void loadCurrent({ syncIds: [m.id], quiet: true }) }
     } catch (e: any) {
       setStatus({ ok: false, text: `删除失败: ${String(e?.message ?? e)}` })
     } finally { setSavingId('') }
@@ -361,7 +312,8 @@ export function ModelCatalogPage(): React.ReactElement {
       })
       const j = await r.json()
       setStatus(j?.ok ? { ok: true, text: '已保存路由级设置' } : { ok: false, text: j?.error || '保存失败' })
-      if (j?.ok) void loadCurrent()
+      // 路由级设置不改模型条目，局部同步即可（同样不能整体重建，否则会丢弃未保存的编辑）
+      if (j?.ok) void loadCurrent({ syncIds: [], quiet: true })
     } catch (e: any) {
       setStatus({ ok: false, text: `保存失败: ${String(e?.message ?? e)}` })
     } finally { setBusy(false) }
@@ -376,25 +328,42 @@ export function ModelCatalogPage(): React.ReactElement {
     setStatus({ ok: true, text: `已加入 ${id}，填好参数后点「保存」` })
   }
 
-  const filteredEdit = React.useMemo(() => {
+  /** 全部可编辑条目（服务端现有 + 本地手填），不受搜索影响。 */
+  const allEditModels = React.useMemo(() => {
     const list = cur?.models ?? []
-    const extra = Object.keys(drafts).filter((id) => !list.some((m) => m.id === id)).map((id) => ({ id, current: {}, suggested: {}, suggestedSource: '' as const, configured: false }))
-    const all = [...list, ...extra]
-    if (!debouncedQ) return all
-    return all.filter((m) => m.id.toLowerCase().includes(debouncedQ) || (drafts[m.id]?.name ?? '').toLowerCase().includes(debouncedQ))
-  }, [cur, drafts, debouncedQ])
+    // 手填的模型号：服务端列表里还没有这一条 → 打上 draftOnly（draftIsDirty 据此报「未保存」）
+    const extra = Object.keys(drafts)
+      .filter((id) => !list.some((m) => m.id === id))
+      .map((id) => ({ id, current: {}, suggested: {}, suggestedSource: '' as const, configured: false, draftOnly: true }))
+    return [...list, ...extra]
+  }, [cur, drafts])
+
+  const filteredEdit = React.useMemo(() => {
+    if (!debouncedQ) return allEditModels
+    return allEditModels.filter((m) => m.id.toLowerCase().includes(debouncedQ) || (drafts[m.id]?.name ?? '').toLowerCase().includes(debouncedQ))
+  }, [allEditModels, drafts, debouncedQ])
 
   const editTotalPages = Math.max(1, Math.ceil(filteredEdit.length / PAGE_SIZE))
   const editSafePage = Math.min(page, editTotalPages)
   const editPageModels = React.useMemo(() => filteredEdit.slice((editSafePage - 1) * PAGE_SIZE, editSafePage * PAGE_SIZE), [filteredEdit, editSafePage])
   React.useEffect(() => { if (page > editTotalPages) setPage(editTotalPages) }, [page, editTotalPages])
 
+  /**
+   * 未保存条数（顶部常驻提示）。
+   * 按**全部**条目统计而不是搜索过滤后的：这个数字是"还有东西没存"的兜底提醒，
+   * 搜索状态下把没显示出来的漏掉就失去意义了。
+   */
+  const unsavedCount = React.useMemo(
+    () => countDirty(allEditModels, drafts, cur?.target ?? 'pi-ai'),
+    [allEditModels, drafts, cur],
+  )
+
   /** 单个编辑卡片。 */
   const renderEditCard = (m: EditableModel) => {
     const d = drafts[m.id]
     if (!d) return null
     const target = cur?.target ?? 'pi-ai'
-    const dirty = !sameDraft(d, toDraft(m.id, m.current, target))
+    const dirty = draftIsDirty(m, d, target)
     const toggleModality = (x: 'text' | 'image') => {
       const has = d.input.includes(x)
       patchDraft(m.id, { input: has ? d.input.filter((y) => y !== x) : [...d.input, x] })
@@ -515,7 +484,12 @@ export function ModelCatalogPage(): React.ReactElement {
             </select>
           </label>
           <div className="mc-actions">
-            <button className="mc-btn mc-btnPrimary" disabled={busy || !sel} onClick={() => (mode === 'edit' ? void loadCurrent() : void discover())}>
+            <button
+              className="mc-btn mc-btnPrimary"
+              disabled={busy || !sel}
+              onClick={() => (mode === 'edit' ? void loadCurrent() : void discover())}
+              title={mode === 'edit' && unsavedCount > 0 ? `会以服务端为准重新读取，丢弃 ${unsavedCount} 条未保存的改动` : undefined}
+            >
               <span className={`mc-btnIcon ${busy ? 'mc-spin' : ''}`}>↻</span>{mode === 'edit' ? '读取现有模型' : '获取最新模型'}
             </button>
             {mode === 'discover' && (
@@ -678,6 +652,11 @@ export function ModelCatalogPage(): React.ReactElement {
                 </div>
               </div>
               <div className="mc-toolbar mc-toolbarEnd">
+                {/* 未保存条数常驻可见：这块区域是"多张卡片各自有草稿"的界面，
+                    光靠每张卡片自己的徽标很容易漏看还有几条没存 */}
+                {unsavedCount > 0 && (
+                  <span className="mc-unsaved" title="这些卡片的改动还没写入配置，离开前记得各点一次「保存」">未保存 {unsavedCount} 条</span>
+                )}
                 <span className="mc-pageRange">共 {filteredEdit.length} 个 · 本页 {editPageModels.length}</span>
                 <div className="mc-pager">
                   <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={editSafePage <= 1} onClick={() => setPage((p) => p - 1)}>上一页</button>

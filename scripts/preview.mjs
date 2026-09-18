@@ -120,6 +120,7 @@ ${css}
         : '<div class="mc-addBox"><input class="mc-input" placeholder="手填模型号，如 deepseek-v4.1-flash" readonly /><button class="mc-btn mc-btnSecondary mc-btnDense">添加模型</button></div>'}
     </div>
     <div class="mc-toolbar mc-toolbarEnd">
+      ${MODE === 'edit' ? '<span class="mc-unsaved" title="这些卡片的改动还没写入配置">未保存 2 条</span>' : ''}
       <span class="mc-pageRange">共 4 个 · 本页 4</span>
       <div class="mc-pager">
         <button class="mc-btn mc-btnSecondary mc-btnDense" disabled>上一页</button>
