@@ -171,6 +171,13 @@ body[data-ds-dark-theme] .mc-root { color-scheme: dark; }
 .mc-id { font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; word-break: break-word; flex: 1 1 auto; min-width: 0; }
 .mc-entryName { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
 .mc-name { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+/* 收录名并进第一行：id **单行不换行且不收缩**（它是主信息，永远完整显示），
+   收录名吸收全部收缩（空间不够就先省略它，悬停 title 仍可看全），徽标靠右。
+   不用 @media 判定窄面板 —— 设置页是居中弹窗，**视口宽度不等于面板宽度**，
+   媒体查询在这里是错的代理；改为靠 flex 分配 + 行内 overflow 兜底，与容器宽度无关。 */
+.mc-entryTopNamed { overflow: hidden; }
+.mc-entryTopNamed .mc-id { flex: 0 0 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.mc-nameInline { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-entryMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
 .mc-metaItem { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .mc-metaItem b { font-weight: 600; color: var(--dsw-alias-label-primary); }

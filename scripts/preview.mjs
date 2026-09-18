@@ -131,13 +131,13 @@ ${css}
     <div class="mc-list">
 ${MODE === 'discover' ? `
       <div class="mc-entry mc-entry-on">
-        <label class="mc-entryTop">
+        <label class="mc-entryTop mc-entryTopNamed">
           <input type="checkbox" checked />
           <span class="mc-lineTag">提供方</span>
           <span class="mc-id">deepseek-v4.1-flash-expires-on-0910</span>
+          <span class="mc-nameInline">DeepSeek V4.1 Flash (内测, 2026-09-10 到期)</span>
           <span class="mc-entryBadges"><span class="mc-src mc-src-manifest">清单</span><span class="mc-note">内测</span></span>
         </label>
-        <div class="mc-entryName"><span class="mc-lineTag">收录名</span><span class="mc-name">DeepSeek V4.1 Flash (内测, 2026-09-10 到期)</span></div>
         <div class="mc-entryMeta">
           <span class="mc-chip">文本</span><span class="mc-chip">图像</span>
           <span class="mc-chip mc-chip-free">计费 x0.00</span>
@@ -146,13 +146,13 @@ ${MODE === 'discover' ? `
         </div>
       </div>
       <div class="mc-entry">
-        <label class="mc-entryTop">
+        <label class="mc-entryTop mc-entryTopNamed">
           <input type="checkbox" />
           <span class="mc-lineTag">提供方</span>
           <span class="mc-id">deepseek-v4-pro</span>
+          <span class="mc-nameInline">DeepSeek V4 Pro</span>
           <span class="mc-entryBadges"><span class="mc-src mc-src-models-dev">models.dev</span></span>
         </label>
-        <div class="mc-entryName"><span class="mc-lineTag">收录名</span><span class="mc-name">DeepSeek V4 Pro</span></div>
         <div class="mc-entryMeta">
           <span class="mc-chip">文本</span><span class="mc-chip mc-chip-effort">推理 High / Max</span>
           <span class="mc-chip mc-chip-credit">计费 x0.03</span>

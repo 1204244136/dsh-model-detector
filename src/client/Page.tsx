@@ -596,21 +596,19 @@ export function ModelCatalogPage(): React.ReactElement {
                   const input = m.input ?? m.inputModalities ?? []
                   return (
                     <div className={`mc-entry ${selected.has(m.id) ? 'mc-entry-on' : ''}`} key={m.id}>
-                      <label className="mc-entryTop" title="提供方使用的模型 id，写回配置时使用">
+                      <label className={`mc-entryTop ${m.name && m.name !== m.id ? 'mc-entryTopNamed' : ''}`} title="提供方使用的模型 id，写回配置时使用">
                         <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
                         <span className="mc-lineTag">提供方</span>
                         <span className="mc-id">{m.id}</span>
+                        {/* 收录名并到同一行（原来单独一行很空）：id 之后接着显示，窄面板下自动省略 */}
+                        {m.name && m.name !== m.id && (
+                          <span className="mc-nameInline" title={`收录名：${m.name}`}>{m.name}</span>
+                        )}
                         <span className="mc-entryBadges">
                           {m.source && <span className={`mc-src mc-src-${m.source}`}>{SOURCE_LABEL[m.source]}</span>}
                           {m.note && <span className="mc-note" title={m.note}>内测</span>}
                         </span>
                       </label>
-                      {m.name && m.name !== m.id && (
-                        <div className="mc-entryName" title="models.dev / 清单收录的展示名">
-                          <span className="mc-lineTag">收录名</span>
-                          <span className="mc-name">{m.name}</span>
-                        </div>
-                      )}
                       <div className="mc-entryMeta">
                         {input.map((x) => <span key={x} className="mc-chip">{MODALITY[x]}</span>)}
                         {formatEfforts(m.reasoningEfforts) && <span className="mc-chip mc-chip-effort">推理 {formatEfforts(m.reasoningEfforts)}</span>}
