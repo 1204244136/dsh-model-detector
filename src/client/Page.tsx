@@ -464,7 +464,6 @@ export function ModelCatalogPage(): React.ReactElement {
   return (
     <div className="mc-root">
       <header className="mc-head">
-        <span className="mc-headDot" aria-hidden="true" />
         <h3 className="mc-title">模型检测</h3>
       </header>
 

@@ -67,7 +67,7 @@ ${css}
 <body${THEME === 'dark' ? ' data-ds-dark-theme' : ''}>
 <div class="frame">
   <div class="mc-root">
-    <header class="mc-head"><span class="mc-headDot"></span><h3 class="mc-title">模型检测</h3></header>
+    <header class="mc-head"><h3 class="mc-title">模型检测</h3></header>
 
     <section class="mc-panel">
       <div class="mc-row mc-rowTop">

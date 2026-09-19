@@ -2,8 +2,9 @@
 
 [简体中文](README.md) · **English**
 
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.0.4-green.svg)](package.json)
+[![npm version](https://img.shields.io/npm/v/dsh-model-detector)](https://www.npmjs.com/package/dsh-model-detector)
+[![license](https://img.shields.io/npm/l/dsh-model-detector)](LICENSE)
+[![downloads](https://img.shields.io/npm/dm/dsh-model-detector)](https://www.npmjs.com/package/dsh-model-detector)
 
 ![Model Detection settings page](docs/preview.png)
 

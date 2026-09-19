@@ -28,12 +28,10 @@ export const CSS = `
 body[data-ds-dark-theme] .mc-root { color-scheme: dark; }
 
 /* ── header ── */
+/* 标题只留纯文本，与 DSH 官方各 section 的标题一致（官方 ModelsSection 的 .title
+   同样只有字号/行高/字重/颜色）。原先标题前有个装饰性蓝圆点（.mc-headDot），
+   无任何语义却与官方页面格格不入，已移除。 */
 .mc-head { display: flex; align-items: center; gap: 10px; }
-.mc-headDot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--dsw-alias-state-business-primary);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
-}
 .mc-title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; color: var(--dsw-alias-label-primary); }
 
 /* ── panel ── */
