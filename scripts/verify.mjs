@@ -233,6 +233,77 @@ const credSaved = credSt._doc['llm-pi-ai'].providers.wb.models[0]
 ok('credits 不会写进 pi-ai 配置', credSaved.credits === undefined, JSON.stringify(credSaved))
 ok('其它字段正常写入', credSaved.contextWindow === 1000000 && credSaved.maxTokens === 64000)
 
+console.log('\n②g 同名前缀消歧（cn:/global: 同名模型必须可分辨）')
+// 网关把同一模型按区域挂成多条 id，富化后收录名完全一样 → 界面里两条一模一样，
+// 用户不知道哪个是哪个区域。规则：仅前缀不同**且同时出现**时，把前缀补进展示名。
+const dupIds = ['cn:deepseek-v4.1-flash', 'global:deepseek-v4.1-flash', 'kimi-k3']
+const dupMd = { tee: { models: { 'deepseek-v4.1-flash': { name: 'DeepSeek V4.1 Flash', modalities: { input: ['text', 'image'] }, limit: { context: 1000000, output: 128000 } } } } }
+const dup = M.mergeDiscovered('wb', dupIds, { baseURL: 'x' }, dupMd)
+const dupCn = dup.find((m) => m.id === 'cn:deepseek-v4.1-flash')
+const dupGl = dup.find((m) => m.id === 'global:deepseek-v4.1-flash')
+eq('cn 变体展示名带前缀', dupCn?.name, 'cn:DeepSeek V4.1 Flash')
+eq('global 变体展示名带前缀', dupGl?.name, 'global:DeepSeek V4.1 Flash')
+ok('两条展示名确实不同（用户可分辨）', dupCn?.name !== dupGl?.name)
+ok('id 一字不动（写回配置仍按原 id 路由）', dupCn?.id === 'cn:deepseek-v4.1-flash' && dupGl?.id === 'global:deepseek-v4.1-flash')
+ok('无重名的模型不被加前缀', dup.find((m) => m.id === 'kimi-k3')?.name === 'kimi-k3')
+// 只有一条时不动（加前缀纯属噪声）
+const solo = M.mergeDiscovered('wb', ['cn:deepseek-v4.1-flash'], { baseURL: 'x' }, dupMd)[0]
+eq('只出现一条时不加前缀', solo.name, 'DeepSeek V4.1 Flash')
+// 展示名本来就不同（来源自己已区分）→ 不插手
+const distinctMd = { tee: { models: { 'a-model': { name: 'A Model CN' }, 'b-model': { name: 'A Model Global' } } } }
+const distinct = M.mergeDiscovered('wb', ['cn:a-model', 'global:b-model'], { baseURL: 'x' }, distinctMd)
+ok('展示名不同则不加前缀', distinct.map((m) => m.name).join('|') === 'A Model CN|A Model Global')
+// 幂等：对已消歧的列表再跑一次不得叠成 `cn:cn:X`（第二遍它们已不同名，自然无事发生）
+const once = [{ id: 'cn:x', name: 'X' }, { id: 'global:x', name: 'X' }]
+const o1 = M.prefixNameOverrides(once)
+const onceApplied = once.map((m) => ({ id: m.id, name: o1.get(m.id) ?? m.name }))
+ok('第一遍消歧两条都加前缀', o1.get('cn:x') === 'cn:X' && o1.get('global:x') === 'global:X')
+ok('第二遍不再叠加（幂等）', M.prefixNameOverrides(onceApplied).size === 0)
+// 来源自己已带前缀的名字：**不加**二次前缀；但两条都叫 `cn:X` 本身就是重名，
+// 唯一性兜底会把它们退回原始 id（可分辨 > 好看），绝不允许留下两条一模一样的。
+const selfPfx = M.prefixNameOverrides([{ id: 'cn:x', name: 'cn:X' }, { id: 'global:x', name: 'cn:X' }])
+ok('不叠成 cn:cn:X', ![...selfPfx.values()].some((v) => v.startsWith('cn:cn:')))
+ok('同名的两条最终可分辨', selfPfx.get('cn:x') !== selfPfx.get('global:x'))
+// 前缀取值只有一种（都是 cn:）→ 不是"仅前缀不同"，不加前缀
+const samePfx = M.prefixNameOverrides([{ id: 'cn:x', name: 'X' }, { id: 'cn:x-2', name: 'X' }])
+ok('前缀取值只有一种时不加前缀', ![...samePfx.values()].some((v) => v.startsWith('cn:X')))
+// 区域**后缀**变体（deepseek-x / deepseek-x-sg）归一化后同名、且都没有前缀可加 ——
+// 前缀救不了，退回原始 id 保证可分辨（正是"查不到收录名"时本来就用的兜底值）。
+const suffixMd = { tee: { models: { 'deepseek-x': { name: 'DeepSeek X' } } } }
+const suffix = M.mergeDiscovered('wb', ['deepseek-x', 'deepseek-x-sg'], { baseURL: 'x' }, suffixMd)
+ok('仅区域后缀不同（无前缀可加）→ 退回原始 id', suffix.map((m) => m.name).join('|') === 'deepseek-x|deepseek-x-sg', suffix.map((m) => m.name).join('|'))
+// 同前缀、仅区域后缀不同：前缀加不出区分度 → 仍重名的那几条退回原始 id
+const samePfxSuffix = M.mergeDiscovered('wb', ['global:deepseek-x', 'global:deepseek-x-sg'], { baseURL: 'x' }, suffixMd)
+ok('同前缀 + 仅区域后缀不同 → 退回原始 id', samePfxSuffix.map((m) => m.name).join('|') === 'global:deepseek-x|global:deepseek-x-sg', samePfxSuffix.map((m) => m.name).join('|'))
+// 关键不变量：任何情况下展示名都不得重复（否则用户又分不出来了）
+const neverDup = (list) => new Set(list.map((m) => m.name)).size === list.length
+ok('前缀能区分时保留加前缀的漂亮名字', neverDup(dup))
+ok('退回原始 id 的那组也不重复', neverDup(samePfxSuffix) && neverDup(suffix))
+ok('混合场景整体无重名（前缀可用则加，不可用则退 id）',
+  neverDup(M.mergeDiscovered('wb', ['cn:deepseek-x', 'global:deepseek-x', 'global:deepseek-x-sg'], { baseURL: 'x' }, suffixMd)))
+// 跨组重名（不同模型恰好收录名相同）：两条都得退回原始 id，否则界面上仍分不出
+const crossMd = { tee: { models: { 'deepseek-v4-flash': { name: 'DeepSeek V4 Flash' }, 'deepseek-v4.1-flash': { name: 'DeepSeek V4 Flash' } } } }
+const cross = M.mergeDiscovered('wb', ['deepseek-v4-flash', 'deepseek-v4.1-flash'], { baseURL: 'x' }, crossMd)
+ok('不同模型同名 → 两条都退回原始 id', cross.map((m) => m.name).join('|') === 'deepseek-v4-flash|deepseek-v4.1-flash', cross.map((m) => m.name).join('|'))
+// 硬保证：随机组合下展示名都不得重复
+const pool = ['cn:x', 'global:x', 'global:x-sg', 'x', 'x-sg', 'hf:deepseek-ai/x', 'kimi-k3']
+let dupFree = true
+for (const ids of [pool, pool.slice(0, 2), pool.slice(1, 4), [...pool].reverse()]) {
+  const got = M.mergeDiscovered('wb', ids, { baseURL: 'x' }, { tee: { models: { x: { name: 'X' }, 'kimi-k3': { name: 'Kimi K3' } } } })
+  if (!neverDup(got)) { dupFree = false; console.log('    重名组合:', ids.join(','), '→', got.map((m) => m.name).join('|')) }
+}
+ok('硬保证：多种组合下展示名都不重复', dupFree)
+// 编辑页建议名同样消歧（否则「采纳」后两条又变得一模一样）
+const stDup = makeSettings({
+  'llm-pi-ai': { providers: { wb: { api: 'openai-completions', baseURL: 'http://127.0.0.1:7863/v1', models: [{ id: 'cn:deepseek-v4.1-flash' }, { id: 'global:deepseek-v4.1-flash' }] } } },
+})
+const curDup = await M.currentModels(stDup, 'wb', dupMd)
+eq('编辑页 cn 建议名带前缀', curDup.models.find((m) => m.id === 'cn:deepseek-v4.1-flash')?.suggested.name, 'cn:DeepSeek V4.1 Flash')
+eq('编辑页 global 建议名带前缀', curDup.models.find((m) => m.id === 'global:deepseek-v4.1-flash')?.suggested.name, 'global:DeepSeek V4.1 Flash')
+// 兜底链路（mergeManifest）同样消歧
+const dupFb = M.mergeManifest('deepseek-official', ['deepseek-v4-flash', 'cn:deepseek-v4-flash'], { baseURL: 'x' })
+ok('纯清单兜底也消歧', dupFb.find((m) => m.id === 'cn:deepseek-v4-flash')?.name === 'cn:DeepSeek V4 Flash')
+
 console.log('\n③ 目标形状转换')
 const shaped = merged.map((m) => M.toTargetModel('llm-deepseek', m)).find((m) => m.id === 'deepseek-v4.1-flash-expires-on-0910')
 eq('deepseek 形状用 inputModalities', shaped?.inputModalities, ['text', 'image'])

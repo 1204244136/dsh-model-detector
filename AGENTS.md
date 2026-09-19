@@ -73,6 +73,9 @@
 > 还要剥掉**区域命名空间前缀与区域后缀**（`PREFIX_RE` / `REGION_SUFFIX_RE`）：WorkBuddy 的 65 条全部形如 `cn:deepseek-v4.1-flash` / `global:glm-5.3`，不剥前缀时实测命中率 **0%**。**冒号前缀只认显式区域词**（`cn|global|intl|us|eu|jp|sg|hk|uk|ams|hf`）而不泛化成任意 `x:`——`gpt-oss:20b`（ollama tag）与 Bedrock 的 `global.anthropic.claude-…-v1:0` 都含冒号，泛化剥法会把它们削成 `20b` / `0` 并互相误命中；斜杠（`vendor/model`）没有这个歧义，可泛化。
 > **全局跨厂商扫描（`globalModelsDevModel`）是最后手段**，有两层保护：① 清单里给"本地代理/聚合网关"路由声明 `upstream`（见 `MANIFEST['antigravity']` / `MANIFEST['wb']`），`upstreamModelsDevModel()` 优先取第一方权威值（实测 `gemini-3.8-flash` 全局会取 vivgrid 的 `maxTokens=128000`，google 是 65536）；② 全局扫描本身先按「含 image」筛，再在同类里取**多数派**（按 `容量|输出` 分组计数），最后才比容量——否则单个网关的乐观值稳定胜出（实测 `deepseek-v4.1-flash` 取到只有 1 家这么写的 1050000/393216，30+ 家写 1000000|1048576 / 384000）。
 
+> **展示名必须唯一（同名变体消歧，`disambiguateNames` / `prefixNameOverrides`）**：归一化剥前缀是为了**富化命中率**，但**展示名不能跟着剥** —— `cn:deepseek-v4.1-flash` 与 `global:deepseek-v4.1-flash` 会富化成**同一个收录名**，写进 DSH 后模型选择器里两条一模一样，用户无法分辨该选哪个区域（这就是加这两个函数的原因）。规则：**仅前缀不同 + 同时出现** → 把前缀补进展示名（`cn:DeepSeek V4.1 Flash`）；前缀仍分不开（同前缀、差别只在被 `REGION_SUFFIX_RE` 归一掉的区域后缀如 `-sg`）→ 那几条退回**原始 id**。**展示名唯一是硬保证**（末尾还会跨组再兜一次），`id` 始终一字不动（路由靠它）。
+> **两个链路都要接**：`mergeDiscovered`（发现页）+ `mergeManifest`（离线兜底）+ `currentModels`（编辑页建议名）——只接一个的话，用户在另一页点「采纳」后两条又变得一样。`prefixNameOverrides()` 必须**幂等**：展示名已带任何命名空间前缀就跳过，否则重复作用会叠成 `cn:cn:X`。
+
 > **模态归一化**：`normalizeInput()` 把 models.dev 的 `['text','image','video',...]` 归为 `['text','image']`（含 image）否则 `['text']`。DSH 只支持 text/image，**不要**把 video/pdf/audio 当作 DSH 模态。
 
 > **pi-ai 目录**：`loadPiAiCatalog()` 运行时读 `@earendil-works/pi-ai/dist/providers/data/*.json`（候选路径见 `piAiDataCandidates()`，读不到就降级为"只有清单条目"）。用于让 pi-ai 路由的"编辑现有模型"列出目录条目、并判定能否写 `modelOverrides`。
@@ -88,7 +91,7 @@
 
 ## 构建（务必注意）
 
-`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（发现链路 `hy4-preview-f` + 编辑页建议值按精确 id 区分变体）/ 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
+`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（发现链路 `hy4-preview-f` + 编辑页建议值按精确 id 区分变体）/ **同名前缀消歧（`cn:`/`global:` 同名变体必须可分辨，含幂等与唯一性兜底）** / 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
 `npm run verify:client` = `node scripts/verify-client.mjs`（**client 草稿逻辑回归**，直接 import `src/client/drafts.ts` 的纯函数：保存某条后其余卡片的未保存编辑必须保留、按钮不得误报「已保存」、手填模型必须可保存、dirty 与操作顺序无关、两套 schema 的提交形状；靠 Node 24 的 TS 类型擦除直接跑 `.ts`）；
 `npm run verify:client-dom` = `node scripts/verify-client-dom.mjs`（**真实渲染回归**：jsdom + 真实 React 渲染已构建的 `lib/client.js`，打桩 fetch 复现「改三条 → 只保存一条」，断言界面按钮文案与草稿未被冲掉；依赖 DSH checkout 的 jsdom/react，缺依赖时**跳过**不算失败）。
 

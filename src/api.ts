@@ -542,6 +542,22 @@ export function normalizeModelId(id: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
+/**
+ * 取模型 id 的**命名空间前缀**（`cn:` / `global:` / `hf:` / `deepseek-ai/`），没有则空串。
+ *
+ * 为什么需要它：归一化会剥掉前缀做名字级匹配，但**展示名**不能剥 —— 网关把同一模型
+ * 按区域挂成 `cn:deepseek-v4.1-flash` 与 `global:deepseek-v4.1-flash` 两条 id 时，
+ * 两者都会富化成同一个收录名（`Deepseek-V4.1-Flash`），用户在界面上根本分不出哪个是
+ * 哪个区域。此时必须把前缀补回展示名（见 {@link disambiguateNames}）。
+ *
+ * 只认显式区域词 + 斜杠 vendor（与 {@link PREFIX_RE} 同口径，避免把 `gpt-oss:20b`
+ * 这类 ollama tag 的冒号当命名空间）。
+ */
+export function modelIdPrefix(id: string): string {
+  const m = id.match(PREFIX_RE)
+  return m ? m[0] : ''
+}
+
 /** 名字级等效判断：归一化后相等，或一侧是另一侧前缀且多出部分仅版本/数字段。 */
 export function modelNameEquivalent(a: string, b: string): boolean {
   const na = normalizeModelId(a)
@@ -553,6 +569,93 @@ export function modelNameEquivalent(a: string, b: string): boolean {
     return /^[-.\d]*$/.test(rest)
   }
   return false
+}
+
+/**
+ * 找出「仅前缀不同」的同名模型，并给出**展示名消歧覆盖**（id → 带前缀的新名字）。
+ *
+ * 要解决的问题：网关把同一模型按区域/命名空间挂成多条 id
+ * （`cn:deepseek-v4.1-flash`、`global:deepseek-v4.1-flash`），富化后**收录名是同一个**
+ * （`Deepseek-V4.1-Flash`）——写进 DSH 后模型选择器里两条一模一样，用户无法分辨该选哪个区域。
+ * 归一化匹配必须剥前缀（否则富化率 0%，见 {@link PREFIX_RE}），但**展示名不能跟着剥**。
+ *
+ * 触发条件（三条同时满足，缺一不动，避免误伤）：
+ *  1. **同名**：展示名完全相同（不同名说明来源自己已区分，无需插手）；
+ *  2. **同时出现**：该组至少两条（只有一条时加前缀纯属噪声）；
+ *  3. **仅前缀不同**：组内归一化 id 相同、且前缀取值至少有 2 种
+ *     （`cn:` vs `global:`，或 `cn:` vs 无前缀）。
+ *
+ * 加前缀时**保留 id 里的原始写法**（`cn:` / `hf:deepseek-ai/`），无前缀的那条保持原样 ——
+ * 于是 `deepseek-x` / `cn:deepseek-x` / `global:deepseek-x` 三条互不相同且都能读出区域。
+ *
+ * **幂等**：展示名已经带任何命名空间前缀时整条跳过 —— 既避免叠成 `cn:cn:X`，也让本函数
+ * 可以安全地重复作用于同一份列表（处理过的名字彼此不同，第二次自然找不到"同名组"）。
+ *
+ * **兜底唯一性**（前缀不足以区分时）：前缀相同、差别只在**区域后缀**的变体
+ * （`global:deepseek-v4.1-flash` vs `global:deepseek-v4.1-flash-sg`，后缀被
+ * {@link REGION_SUFFIX_RE} 归一掉）加前缀后仍然同名。此时**只把仍然重名的那几条**退回
+ * 原始 id —— 它是列表的唯一键，必然可分辨，也正是"查不到收录名"时本来就用的兜底值
+ * （`name || id`）。前缀能区分开的（`cn:` vs `global:`）仍保留加前缀的漂亮名字，
+ * 因为那是用户明确要的。
+ *
+ * 注意只改**展示名**：模型 `id` 一字不动（写回配置后 DSH 仍按原 id 路由）。
+ */
+export function prefixNameOverrides(
+  models: Array<{ id: string; name?: string }>,
+): Map<string, string> {
+  const groups = new Map<string, Array<{ id: string; name?: string }>>()
+  for (const m of models) {
+    if (!m || typeof m.id !== 'string') continue
+    const name = typeof m.name === 'string' ? m.name.trim() : ''
+    if (!name) continue
+    // 分组键 = 展示名 + 归一化 id（后者即「仅前缀不同」的判定：归一化会剥掉前缀）
+    const key = `${name}\u0000${normalizeModelId(m.id)}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(m)
+    else groups.set(key, [m])
+  }
+  const out = new Map<string, string>()
+  for (const bucket of groups.values()) {
+    if (bucket.length < 2) continue
+    const prefixes = new Set(bucket.map((m) => modelIdPrefix(m.id)))
+    if (prefixes.size < 2) continue
+    for (const m of bucket) {
+      const p = modelIdPrefix(m.id)
+      if (!p) continue
+      const name = String(m.name)
+      // 幂等：名字已经带任何命名空间前缀（本函数上一轮的产物，或来源自己写的）就不再动
+      if (modelIdPrefix(name) !== '') continue
+      out.set(m.id, `${p}${name}`)
+    }
+  }
+  // 兜底：前缀没能区分开的（同前缀、仅区域后缀不同）→ 那些条目退回原始 id
+  const byFinal = new Map<string, Array<{ id: string; name?: string }>>()
+  for (const m of models) {
+    if (!m || typeof m.id !== 'string' || !m.name) continue
+    const k = out.get(m.id) ?? String(m.name)
+    const b = byFinal.get(k)
+    if (b) b.push(m)
+    else byFinal.set(k, [m])
+  }
+  for (const bucket of byFinal.values()) {
+    if (bucket.length < 2) continue
+    for (const m of bucket) if (m.id !== (out.get(m.id) ?? String(m.name))) out.set(m.id, m.id)
+  }
+  return out
+}
+
+/**
+ * 就地给「仅前缀不同的同名模型」的展示名补上前缀（见 {@link prefixNameOverrides}）。
+ * 返回同一个数组，便于在 merge 链尾直接 `return disambiguateNames(list)`。
+ */
+export function disambiguateNames<T extends { id: string; name?: string }>(models: T[]): T[] {
+  const overrides = prefixNameOverrides(models)
+  if (overrides.size === 0) return models
+  for (const m of models) {
+    const next = overrides.get(m.id)
+    if (next !== undefined) m.name = next
+  }
+  return models
 }
 
 /** 一个候选条目的能力评分（越大越"丰富"）：含 image 的模态优先，其次容量。 */
@@ -690,7 +793,7 @@ export function mergeDiscovered(
   const defInput = (providerDefault.input && providerDefault.input.length > 0)
     ? providerDefault.input
     : (['text'] as Array<'text' | 'image'>)
-  return liveModels.map((entry) => {
+  const built = liveModels.map((entry) => {
     const d: DeclaredModel = typeof entry === 'string' ? { id: entry } : entry
     const id = d.id
     // 权威能力源：models.dev（当前提供方，精确 + 名字级等效）。注意 models.dev 结构为
@@ -734,6 +837,8 @@ export function mergeDiscovered(
       source,
     }
   })
+  // 仅前缀不同的同名模型（cn:x / global:x）在界面上必须能分辨 —— 见 disambiguateNames
+  return disambiguateNames(built)
 }
 
 /** 纯清单合并（不依赖 models.dev）——用于发现失败时的兜底。 */
@@ -746,7 +851,7 @@ export function mergeManifest(
   const defInput = (providerDefault.input && providerDefault.input.length > 0)
     ? providerDefault.input
     : (['text'] as Array<'text' | 'image'>)
-  return liveIds.map(id => {
+  return disambiguateNames(liveIds.map(id => {
     let mf: ManifestModel | undefined = mp?.models[id]
     if (!mf && mp) mf = findByName(mp.models, id)
     const contextWindow = (mf?.contextWindow ?? providerDefault.contextWindow)
@@ -767,7 +872,7 @@ export function mergeManifest(
       ...(mf?.compat ? { compat: mf.compat } : {}),
       source,
     }
-  })
+  }))
 }
 
 // ── 写入目标适配器（两套 schema）────────────────────────────────────────────
@@ -1188,6 +1293,17 @@ export async function currentModels(
   }
   // 适配器默认目录（未显式配置但实际可用）——让"手填的模型号"和"目录模型"同屏可编辑
   if (catalog) for (const id of Object.keys(catalog)) push(id, {}, false)
+  // 建议名同样要消歧：`cn:x` 与 `global:x` 的建议收录名完全一样，界面上分不出区域
+  // （与发现链路同一口径，见 disambiguateNames）。
+  const nameOverrides = prefixNameOverrides(
+    out.map((m) => ({ id: m.id, name: typeof m.suggested?.name === 'string' ? m.suggested.name : undefined })),
+  )
+  if (nameOverrides.size > 0) {
+    for (const m of out) {
+      const next = nameOverrides.get(m.id)
+      if (next !== undefined) m.suggested = { ...m.suggested, name: next }
+    }
+  }
   return {
     target,
     models: out,

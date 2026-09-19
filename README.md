@@ -25,6 +25,7 @@
 - **四级优先级**：当前提供方 models.dev → 全局 models.dev → 内置 manifest（薄覆盖）→ 保守默认。
 - **卡片式交互**：分页 + 搜索防抖 + 勾选应用，海量模型不卡顿；每张卡清晰标注数据来源与推理档位。
 - **来源透明**：区分「查得到」与「默认兜底」，models.dev 未收录时给出提示，不把默认当查得。
+- **同名变体可分辨**：网关常把同一模型按区域挂成多条 id（`cn:deepseek-v4.1-flash`、`global:deepseek-v4.1-flash`），富化后**收录名完全一样**，选择器里两条一模一样。插件在「仅前缀不同且同时出现」时把前缀补进展示名（`cn:DeepSeek V4.1 Flash` / `global:DeepSeek V4.1 Flash`）；前缀也分不开时（同前缀、仅区域后缀不同）退回原始 id，**保证展示名唯一**。模型 `id` 一字不动，路由不受影响。
 
 ## 为什么做这个
 
@@ -48,8 +49,9 @@ models.dev（自动、社区维护的模态/容量/推理/思考档位）—— 
 
 **思考档位 → DSH reasoningEfforts**：DSH 对模型的思考强度由 profile 层的 `reasoningEfforts`（档位 → wire 值）驱动，菜单只显示适配器公布的档位。插件从 models.dev `reasoning_options` 读取每个模型声明的档位（wire 值 = 档位名，`none` → `off`），manifest 的人工 `thinkingLevelMap` 优先（如 deepseek 的 `{high, max}` + `compat.thinkingFormat: deepseek`）。只有档位声明（非纯开关）才写，且只保留 pi-ai 词汇表（off/minimal/low/medium/high/xhigh/max）内的档位，避免 DSH 校验拒绝整个提供方。
 
-**来源判定**：每个模型合并后标 `source`：
+**同名变体的展示名消歧**：归一化匹配必须剥掉区域前缀（`cn:` / `global:`），否则富化率 0%；但**展示名不能跟着剥**——`cn:deepseek-v4.1-flash` 与 `global:deepseek-v4.1-flash` 富化后都会得到同一个收录名，写进 DSH 后模型选择器里两条一模一样，用户无法判断该选哪个区域。插件因此在「**仅前缀不同 + 同时出现**」时把前缀补进展示名；若前缀仍不足以区分（同前缀、差别只在被归一掉的区域后缀如 `-sg`），则退回原始 id——**展示名唯一是硬保证**，`id` 始终一字不动。
 
+**来源判定**：每个模型合并后标 `source`：
 | source | 含义 |
 |---|---|
 | `models-dev` | 命中 models.dev（权威社区数据，含跨厂商回退） |
