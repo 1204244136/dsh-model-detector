@@ -15,6 +15,6 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true
   },
-  "include": ["src/index.ts", "src/api.ts", "src/manifest.ts"],
+  "include": ["src/index.ts", "src/api.ts", "src/manifest.ts", "src/ambient.d.ts"],
   "exclude": ["src/client"]
 }

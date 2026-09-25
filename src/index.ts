@@ -10,13 +10,14 @@
  *   POST /api/apply          批量写入发现结果
  * client 侧：settings.section 设置页（React）。
  */
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import z from 'schemastery'
+import z from '@deepseek-ai/schemastery'
 import {
   listConfiguredProviders, readJsonBody, subPath, fetchLiveModels, mergeDiscovered,
   loadModelsDev, modelsDevStatus, applyModels, readProviders, currentModels, writeModel,
   removeModel, writeRouteReasoning, resolveTarget, toTargetModel, routeReasoningLevels,
+  isDeepSeekNamespace,
   type HostCtx,
 } from './api.js'
 import { manifestProvider } from './manifest.js'
@@ -106,7 +107,7 @@ export function apply(ctx: Context, config: Config): void {
             const merged = mergeDiscovered(route, live, defaults, modelsDev)
             return json(res, 200, {
               ok: true, models: shape(merged), raw: merged, source: 'live+models.dev', fromManifestOnly: false,
-              route, ns: target?.ns ?? 'llm-pi-ai', target: target?.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
+              route, ns: target?.ns ?? 'llm-pi-ai', target: isDeepSeekNamespace(target?.ns ?? '') ? 'deepseek' : 'pi-ai',
               modelsDevLoaded: mdDiag.loaded, modelsDevProviders: mdDiag.providers,
               modelsDevError: mdDiag.error, providerInModelsDev: !!modelsDev?.[route],
               sourceCounts: sourceCounts(merged),
@@ -128,7 +129,7 @@ export function apply(ctx: Context, config: Config): void {
             return json(res, 200, {
               ok: true, models: shape(fallbackMerged), raw: fallbackMerged,
               source: 'fallback', fromManifestOnly: ids.length > 0, warn,
-              route, ns: target?.ns ?? 'llm-pi-ai', target: target?.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
+              route, ns: target?.ns ?? 'llm-pi-ai', target: isDeepSeekNamespace(target?.ns ?? '') ? 'deepseek' : 'pi-ai',
               modelsDevLoaded: mdDiag.loaded, modelsDevProviders: mdDiag.providers,
               modelsDevError: mdDiag.error, providerInModelsDev: !!modelsDev?.[route],
               sourceCounts: sourceCounts(fallbackMerged),
@@ -169,7 +170,7 @@ export function apply(ctx: Context, config: Config): void {
             ok: true,
             route,
             ns: r.target.ns,
-            target: r.target.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
+            target: isDeepSeekNamespace(r.target.ns) ? 'deepseek' : 'pi-ai',
             hasModelsList: r.target.hasModelsList,
             baseURL: r.target.baseURL,
             apiKeyEnv: r.target.apiKeyEnv,

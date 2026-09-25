@@ -107,10 +107,16 @@ export function reasoningEffortsFromManifest(tlm: Record<string, string | null> 
 // ── 命名空间与写入目标 ──────────────────────────────────────────────────────
 
 /** 插件认得的 settings 命名空间（写入目标）。 */
-export type Namespace = 'llm-pi-ai' | 'llm-deepseek'
+export type Namespace = 'llm-pi-ai' | 'llm-deepseek' | 'llm-deepseek-api-key' | 'llm-deepseek-account' | (string & {})
 
-/** 内置 DeepSeek 官方适配器唯一拥有的路由键。 */
+/** 内置 DeepSeek 官方适配器拥有的路由键。 */
 export const DEEPSEEK_PROVIDER = 'deepseek-official'
+export const DEEPSEEK_ACCOUNT_PROVIDER = 'deepseek-account'
+
+/** 是否属于 DeepSeek 协议族的 settings 命名空间。 */
+export function isDeepSeekNamespace(ns: string): boolean {
+  return ns === 'llm-deepseek' || ns === 'llm-deepseek-api-key' || ns === 'llm-deepseek-account' || ns.startsWith('llm-deepseek')
+}
 
 /** settings 服务子集（与 dsh-model-pro 相同，另加 describe 以读原始 user 层）。 */
 export interface SettingsService {
@@ -179,19 +185,32 @@ const normalizeRouteKey = (s: string): string => s.trim().toLowerCase().replace(
  *
  * 判定顺序（前两条是"已配置即权威"）：
  *  1. llm-pi-ai.providers 里有这个 route → llm-pi-ai
- *  2. route 是内置 DeepSeek 适配器唯一拥有的 `deepseek-official` → llm-deepseek
- *     （该插件注册了段就认，未注册时也认——它的默认目录本来就在服务）
- *  3. 清单 target 提示（profile 里还没写该路由时）
- *  4. 缺省 llm-pi-ai（pi-ai 是"任意提供方"的通用入口）
+ *  2. route 是内置 DeepSeek 账号路由 `deepseek-account` → llm-deepseek-account
+ *  3. route 是内置 DeepSeek 官方适配器 `deepseek-official` →
+ *     已注册 llm-deepseek-api-key 则用它，否则优先 llm-deepseek
+ *  4. 清单 target 提示（profile 里还没写该路由时）
+ *  5. 缺省 llm-pi-ai（pi-ai 是"任意提供方"的通用入口）
  */
 export function resolveNamespace(route: string, st: SettingsService | undefined): Namespace | undefined {
   const key = normalizeRouteKey(route)
   const pi = readSection(st, 'llm-pi-ai')
   const hasPiRoute = !!(pi?.providers && typeof pi.providers === 'object' && (pi.providers as any)[route])
   if (hasPiRoute) return 'llm-pi-ai'
-  if (key === DEEPSEEK_PROVIDER) return 'llm-deepseek'
+  if (key === DEEPSEEK_ACCOUNT_PROVIDER) return 'llm-deepseek-account'
+  if (key === DEEPSEEK_PROVIDER) {
+    if (namespaceRegistered(st, 'llm-deepseek-api-key') && !namespaceRegistered(st, 'llm-deepseek')) {
+      return 'llm-deepseek-api-key'
+    }
+    return 'llm-deepseek'
+  }
   const hint = manifestProvider(route)?.target
-  if (hint === 'deepseek') return 'llm-deepseek'
+  if (hint === 'deepseek') {
+    if (key === DEEPSEEK_ACCOUNT_PROVIDER) return 'llm-deepseek-account'
+    if (namespaceRegistered(st, 'llm-deepseek-api-key') && !namespaceRegistered(st, 'llm-deepseek')) {
+      return 'llm-deepseek-api-key'
+    }
+    return 'llm-deepseek'
+  }
   if (hint === 'pi-ai') return 'llm-pi-ai'
   return 'llm-pi-ai'
 }
@@ -214,14 +233,17 @@ export function resolveTarget(route: string, st: SettingsService | undefined): R
   const ns = resolveNamespace(route, st)
   if (ns === undefined) return undefined
   const mp = manifestProvider(route)
-  if (ns === 'llm-deepseek') {
-    const section = readSection(st, 'llm-deepseek') ?? {}
+  if (isDeepSeekNamespace(ns)) {
+    const section = readSection(st, ns as Namespace) ?? {}
+    const isAccount = normalizeRouteKey(route) === DEEPSEEK_ACCOUNT_PROVIDER || ns === 'llm-deepseek-account'
     return {
       route,
       ns,
       profile: section,
       mp,
-      apiKeyEnv: typeof section.apiKeyEnv === 'string' && section.apiKeyEnv ? section.apiKeyEnv : 'DEEPSEEK_API_KEY',
+      apiKeyEnv: isAccount
+        ? ''
+        : (typeof section.apiKeyEnv === 'string' && section.apiKeyEnv ? section.apiKeyEnv : 'DEEPSEEK_API_KEY'),
       baseURL: typeof section.baseURL === 'string' && section.baseURL ? section.baseURL : (mp?.baseURL ?? 'https://api.deepseek.com'),
       hasModelsList: Array.isArray(section.models),
     }
@@ -248,8 +270,7 @@ export function readProviders(st: SettingsService | undefined): Record<string, a
 
 /**
  * 列出所有可检测/可编辑的提供方：llm-pi-ai 已配置路由 + DeepSeek 官方适配器
- * （后者即使 settings 里没有 `llm-deepseek` 段也存在——插件默认就注册
- * `deepseek-official` 路由并服务内置目录）。
+ * （官方 API Key 路由 deepseek-official 与官方账号路由 deepseek-account）。
  */
 export function listConfiguredProviders(st: SettingsService | undefined) {
   const out: Array<Record<string, unknown>> = []
@@ -263,11 +284,19 @@ export function listConfiguredProviders(st: SettingsService | undefined) {
       modelCount: Array.isArray(p?.models) ? p.models.length : 0,
       inManifest: manifestProvider(route) !== undefined,
       ns: t?.ns ?? 'llm-pi-ai',
-      target: t?.ns === 'llm-deepseek' ? 'deepseek' : 'pi-ai',
+      target: isDeepSeekNamespace(t?.ns ?? '') ? 'deepseek' : 'pi-ai',
     })
   }
-  if (namespaceRegistered(st, 'llm-deepseek') && !out.some((x) => x.route === DEEPSEEK_PROVIDER)) {
-    const section = readSection(st, 'llm-deepseek') ?? {}
+
+  // DeepSeek 官方 API Key 路由（llm-deepseek 或 llm-deepseek-api-key）
+  const officialNs: Namespace | undefined = namespaceRegistered(st, 'llm-deepseek')
+    ? 'llm-deepseek'
+    : namespaceRegistered(st, 'llm-deepseek-api-key')
+      ? 'llm-deepseek-api-key'
+      : undefined
+
+  if (officialNs !== undefined && !out.some((x) => x.route === DEEPSEEK_PROVIDER)) {
+    const section = readSection(st, officialNs) ?? {}
     const mp = manifestProvider(DEEPSEEK_PROVIDER)
     out.unshift({
       route: DEEPSEEK_PROVIDER,
@@ -276,7 +305,24 @@ export function listConfiguredProviders(st: SettingsService | undefined) {
       baseURL: (typeof section.baseURL === 'string' && section.baseURL) || mp?.baseURL || 'https://api.deepseek.com',
       modelCount: Array.isArray(section.models) ? section.models.length : 0,
       inManifest: mp !== undefined,
-      ns: 'llm-deepseek',
+      ns: officialNs,
+      target: 'deepseek',
+      builtin: true,
+    })
+  }
+
+  // DeepSeek 官方账号路由（llm-deepseek-account）
+  if (namespaceRegistered(st, 'llm-deepseek-account') && !out.some((x) => x.route === DEEPSEEK_ACCOUNT_PROVIDER)) {
+    const section = readSection(st, 'llm-deepseek-account') ?? {}
+    const mp = manifestProvider(DEEPSEEK_ACCOUNT_PROVIDER)
+    out.push({
+      route: DEEPSEEK_ACCOUNT_PROVIDER,
+      displayName: 'DeepSeek（官方账号）',
+      api: 'openai-completions',
+      baseURL: (typeof section.baseURL === 'string' && section.baseURL) || mp?.baseURL || 'https://api.deepseek.com',
+      modelCount: Array.isArray(section.models) ? section.models.length : 0,
+      inManifest: mp !== undefined,
+      ns: 'llm-deepseek-account',
       target: 'deepseek',
       builtin: true,
     })
@@ -880,8 +926,11 @@ export function mergeManifest(
 /** pi-ai modelProfile 认识、可写入的模型字段（白名单，防止无效字段污染配置）。 */
 const PI_AI_MODEL_FIELDS = new Set(['id', 'name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat'])
 
-/** llm-deepseek catalogModel 认识、可写入的字段（见 packages/llm/llm-deepseek/src/index.ts）。 */
-const DEEPSEEK_MODEL_FIELDS = new Set(['id', 'name', 'description', 'contextWindow', 'maxTokens', 'inputModalities', 'imagePixelBudget', 'imageMaxBytes'])
+/** llm-deepseek catalogModel 认识、可写入的字段（见 packages/llm/llm-deepseek/src/config.ts）。 */
+const DEEPSEEK_MODEL_FIELDS = new Set([
+  'id', 'name', 'description', 'contextWindow', 'maxTokens', 'inputModalities',
+  'imagePixelBudget', 'imageMaxBytes', 'systemPromptUpdate', 'toolUpdate',
+])
 
 /** DSH compatProfile 认识的字段（过滤 manifest 之外的未知键，防 schema 漂移）。 */
 const COMPAT_FIELDS = new Set([
@@ -986,12 +1035,19 @@ function cleanDeepSeekModel(m: unknown, withId: boolean): Record<string, unknown
     delete out.imagePixelBudget
     delete out.imageMaxBytes
   }
+  // systemPromptUpdate / toolUpdate 字段支持（llm-deepseek 校验规则）
+  if (src.systemPromptUpdate === 'in-history') {
+    out.systemPromptUpdate = 'in-history'
+  }
+  if (src.toolUpdate === 'in-history' || src.toolUpdate === 'addition-only') {
+    out.toolUpdate = src.toolUpdate
+  }
   return Object.keys(out).length > 0 ? out : null
 }
 
 /** 按命名空间清洗一条模型（pi-ai / deepseek 两套 schema）。 */
 export function cleanForTarget(ns: Namespace, m: unknown, withId = true): Record<string, unknown> | null {
-  return ns === 'llm-deepseek' ? cleanDeepSeekModel(m, withId) : cleanPiAiModel(m, withId)
+  return isDeepSeekNamespace(ns) ? cleanDeepSeekModel(m, withId) : cleanPiAiModel(m, withId)
 }
 
 /**
@@ -1011,13 +1067,15 @@ export function toTargetModel(ns: Namespace, m: Record<string, unknown>): Record
     ...(m.credits ? { credits: m.credits } : {}),
     ...(m.reasoning ? { reasoning: m.reasoning } : {}),
   }
-  if (ns === 'llm-deepseek') {
+  if (isDeepSeekNamespace(ns)) {
     return {
       id: m.id,
       ...(m.name ? { name: m.name } : {}),
       ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
       ...(m.maxTokens ? { maxTokens: m.maxTokens } : {}),
       ...(Array.isArray(m.input) ? { inputModalities: [...m.input] } : {}),
+      ...(m.systemPromptUpdate === 'in-history' ? { systemPromptUpdate: 'in-history' } : {}),
+      ...(m.toolUpdate === 'in-history' || m.toolUpdate === 'addition-only' ? { toolUpdate: m.toolUpdate } : {}),
       ...display,
     }
   }
@@ -1044,15 +1102,15 @@ export async function applyModels(st: SettingsService, route: string, models: Ar
   const target = resolveTarget(route, st)
   if (target === undefined) throw new Error(`未找到提供方 ${route}（settings 里没有该路由）`)
   // 路由必须真实存在：pi-ai 段里没有这个 route 就是打错了，别静默新建一个空提供方
-  if (target.ns === 'llm-pi-ai' && !readProviders(st)[route]) throw new Error(`settings 里没有提供方 ${route}`)
+  if (!isDeepSeekNamespace(target.ns) && !readProviders(st)[route]) throw new Error(`settings 里没有提供方 ${route}`)
   const cleaned = models
     .map((m) => cleanForTarget(target.ns, toTargetModel(target.ns, m), true))
     .filter((m): m is Record<string, unknown> => m !== null)
-  if (target.ns === 'llm-deepseek') {
-    const user = readUserLayer(st, 'llm-deepseek') ?? {}
+  if (isDeepSeekNamespace(target.ns)) {
+    const user = readUserLayer(st, target.ns as Namespace) ?? {}
     const next: Record<string, unknown> = { ...user, ...(cleaned.length > 0 ? { models: makeHostPlain(cleaned) } : {}) }
     if (cleaned.length === 0) delete next.models
-    await st.replace('llm-deepseek', makeHostPlain(next), readRevision(st, 'llm-deepseek'))
+    await st.replace(target.ns, makeHostPlain(next), readRevision(st, target.ns as Namespace))
     return { ns: target.ns, count: cleaned.length }
   }
   const preserved: Record<string, unknown> = {}
@@ -1276,7 +1334,7 @@ export async function currentModels(
     const { suggested, source, note } = suggestionFor(route, id, modelsDev, catalog, declaredById.get(id))
     out.push({ id, current, suggested, suggestedSource: source, note, configured, ...(inCatalog === undefined ? {} : { inCatalog }) })
   }
-  if (target.ns === 'llm-deepseek') {
+  if (isDeepSeekNamespace(target.ns)) {
     for (const m of Array.isArray(target.profile.models) ? target.profile.models : []) {
       if (m && typeof m.id === 'string') push(m.id, m as Record<string, unknown>, true)
     }
@@ -1307,7 +1365,7 @@ export async function currentModels(
   return {
     target,
     models: out,
-    ...(target.ns === 'llm-deepseek'
+    ...(isDeepSeekNamespace(target.ns)
       ? {
         reasoningEffort: typeof target.profile.reasoningEffort === 'string' ? target.profile.reasoningEffort : 'high',
         thinking: typeof target.profile.thinking === 'string' ? target.profile.thinking : 'enabled',
@@ -1318,7 +1376,7 @@ export async function currentModels(
 
 /** 一个路由允许的推理档位（deepseek 是路由级固定四档；pi-ai 由模型自己声明）。 */
 export function routeReasoningLevels(ns: Namespace): string[] {
-  return ns === 'llm-deepseek' ? ['off', 'low', 'high', 'max'] : [...THINKING_LEVELS]
+  return isDeepSeekNamespace(ns) ? ['off', 'low', 'high', 'max'] : [...THINKING_LEVELS]
 }
 
 /**
@@ -1339,13 +1397,13 @@ export async function writeModel(
   const cleaned = cleanForTarget(target.ns, { ...model, id }, true)
   if (cleaned === null) throw new Error(`模型 ${id} 没有任何可写入的字段`)
 
-  if (target.ns === 'llm-deepseek') {
-    const user = readUserLayer(st, 'llm-deepseek') ?? {}
+  if (isDeepSeekNamespace(target.ns)) {
+    const user = readUserLayer(st, target.ns as Namespace) ?? {}
     const cur: any[] = Array.isArray(user.models) ? [...user.models] : []
     const i = cur.findIndex((m) => m && m.id === id)
     if (i >= 0) cur[i] = { ...cur[i], ...cleaned }
     else cur.push(cleaned)
-    await st.replace('llm-deepseek', makeHostPlain({ ...user, models: cur }), readRevision(st, 'llm-deepseek'))
+    await st.replace(target.ns, makeHostPlain({ ...user, models: cur }), readRevision(st, target.ns as Namespace))
     return { ns: target.ns, key: 'models' }
   }
 
@@ -1381,12 +1439,12 @@ export async function writeModel(
 export async function removeModel(st: SettingsService, route: string, id: string): Promise<{ removed: boolean; from: string }> {
   const target = resolveTarget(route, st)
   if (target === undefined) throw new Error(`未找到提供方 ${route}（settings 里没有该路由）`)
-  if (target.ns === 'llm-deepseek') {
-    const user = readUserLayer(st, 'llm-deepseek') ?? {}
+  if (isDeepSeekNamespace(target.ns)) {
+    const user = readUserLayer(st, target.ns as Namespace) ?? {}
     const cur: any[] = Array.isArray(user.models) ? [...user.models] : []
     const next = cur.filter((m) => !(m && m.id === id))
     if (next.length === cur.length) return { removed: false, from: '' }
-    await st.replace('llm-deepseek', makeHostPlain({ ...user, models: next }), readRevision(st, 'llm-deepseek'))
+    await st.replace(target.ns, makeHostPlain({ ...user, models: next }), readRevision(st, target.ns as Namespace))
     return { removed: true, from: 'models' }
   }
   const providers = { ...readProviders(st) }
@@ -1411,15 +1469,15 @@ export async function removeModel(st: SettingsService, route: string, id: string
   return { removed: true, from }
 }
 
-/** 写入 llm-deepseek 的路由级推理档位 / thinking 开关。 */
+/** 写入 DeepSeek 路由级推理档位 / thinking 开关（支持 deepseek-official 及 deepseek-account）。 */
 export async function writeRouteReasoning(
   st: SettingsService,
   route: string,
   patch: { reasoningEffort?: string; thinking?: string },
 ): Promise<void> {
   const target = resolveTarget(route, st)
-  if (target === undefined || target.ns !== 'llm-deepseek') throw new Error(`${route} 不是 DeepSeek 官方路由`)
-  const user = readUserLayer(st, 'llm-deepseek') ?? {}
+  if (target === undefined || !isDeepSeekNamespace(target.ns)) throw new Error(`${route} 不是 DeepSeek 官方路由`)
+  const user = readUserLayer(st, target.ns as Namespace) ?? {}
   const next: Record<string, unknown> = { ...user }
   if (patch.reasoningEffort !== undefined) {
     if (!['off', 'low', 'high', 'max'].includes(patch.reasoningEffort)) throw new Error('reasoningEffort 只能是 off/low/high/max')
@@ -1429,7 +1487,7 @@ export async function writeRouteReasoning(
     if (!['enabled', 'disabled'].includes(patch.thinking)) throw new Error('thinking 只能是 enabled/disabled')
     next.thinking = patch.thinking
   }
-  await st.replace('llm-deepseek', makeHostPlain(next), readRevision(st, 'llm-deepseek'))
+  await st.replace(target.ns, makeHostPlain(next), readRevision(st, target.ns as Namespace))
 }
 
 /** 所有清单提供方键（诊断/工具用）。 */

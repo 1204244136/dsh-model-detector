@@ -69,13 +69,26 @@ console.log(`dsh-model-detector v${pkg.version} — host 回归`)
 
 console.log('\n① 命名空间识别')
 eq('deepseek-official → llm-deepseek', M.resolveNamespace('deepseek-official', st), 'llm-deepseek')
+eq('deepseek-account → llm-deepseek-account', M.resolveNamespace('deepseek-account', st), 'llm-deepseek-account')
 eq('opencode-go → llm-pi-ai', M.resolveNamespace('opencode-go', st), 'llm-pi-ai')
 eq('deepseek（pi-ai 目录路由）→ llm-pi-ai', M.resolveNamespace('deepseek', st), 'llm-pi-ai')
 ok('DeepSeek 官方路由默认 apiKeyEnv', M.resolveTarget('deepseek-official', st)?.apiKeyEnv === 'DEEPSEEK_API_KEY')
+ok('DeepSeek 官方账号路由 apiKeyEnv 为空', M.resolveTarget('deepseek-account', st)?.apiKeyEnv === '')
+ok('DeepSeek 官方账号路由默认 baseURL', M.resolveTarget('deepseek-account', st)?.baseURL === 'https://api.deepseek.com')
+
+// 测试独立 llm-deepseek-api-key 命名空间识别
+const stApiKeyOnly = makeSettings({
+  'llm-deepseek-api-key': { apiKeyEnv: 'CUSTOM_KEY', models: [] },
+})
+eq('llm-deepseek-api-key 注册时识别为该命名空间', M.resolveNamespace('deepseek-official', stApiKeyOnly), 'llm-deepseek-api-key')
+eq('llm-deepseek-api-key 读取配置 target', M.resolveTarget('deepseek-official', stApiKeyOnly)?.apiKeyEnv, 'CUSTOM_KEY')
 
 console.log('\n② 名字级匹配（内测模型号的模态）')
-const ids = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp', 'deepseek-v4.1-flash-expires-on-0910']
+const ids = ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp', 'deepseek-v4.1-flash-expires-on-0910']
 const merged = M.mergeDiscovered('deepseek-official', ids, { baseURL: 'https://api.deepseek.com' }, {})
+const dFlash = merged.find((m) => m.id === 'deepseek-flash')
+ok('最新默认模型 deepseek-flash 命中清单', dFlash?.source === 'manifest', `source=${dFlash?.source}`)
+eq('deepseek-flash 模态 = text+image', dFlash?.input, ['text', 'image'])
 const v41 = merged.find((m) => m.id === 'deepseek-v4.1-flash-expires-on-0910')
 ok('内测模型号命中清单（非纯默认）', v41?.source === 'manifest', `source=${v41?.source}`)
 eq('内测模型号模态 = text+image（bug 修复点）', v41?.input, ['text', 'image'])
@@ -339,12 +352,18 @@ eq('路由级档位默认 high', cur.reasoningEffort, 'high')
 const curV41 = cur.models.find((m) => m.id === 'deepseek-v4.1-flash-expires-on-0910')
 ok('现有模型在列表里且标记已配置', curV41?.configured === true)
 ok('给出含图像的建议值', (curV41?.suggested?.input ?? []).includes('image'), JSON.stringify(curV41?.suggested?.input))
-await M.writeModel(st, 'deepseek-official', { id: 'deepseek-v4.1-flash-expires-on-0910', name: 'V4.1 内测', contextWindow: 1000000, maxTokens: 384000, inputModalities: ['text', 'image'] })
+await M.writeModel(st, 'deepseek-official', { id: 'deepseek-v4.1-flash-expires-on-0910', name: 'V4.1 内测', contextWindow: 1000000, maxTokens: 384000, inputModalities: ['text', 'image'], systemPromptUpdate: 'in-history', toolUpdate: 'addition-only' })
 const saved = st._doc['llm-deepseek'].models.find((m) => m.id === 'deepseek-v4.1-flash-expires-on-0910')
 eq('写入后模态含图像', saved.inputModalities, ['text', 'image'])
 eq('写入保留展示名', saved.name, 'V4.1 内测')
+eq('写入保留 systemPromptUpdate', saved.systemPromptUpdate, 'in-history')
+eq('写入保留 toolUpdate', saved.toolUpdate, 'addition-only')
 ok('其它模型未被破坏', st._doc['llm-deepseek'].models.some((m) => m.id === 'deepseek-v4-flash'))
-ok('写出的字段都在 catalogModel 白名单内', Object.keys(saved).every((k) => ['id', 'name', 'description', 'contextWindow', 'maxTokens', 'inputModalities', 'imagePixelBudget', 'imageMaxBytes'].includes(k)), Object.keys(saved).join(','))
+ok('写出的字段都在 catalogModel 白名单内', Object.keys(saved).every((k) => ['id', 'name', 'description', 'contextWindow', 'maxTokens', 'inputModalities', 'imagePixelBudget', 'imageMaxBytes', 'systemPromptUpdate', 'toolUpdate'].includes(k)), Object.keys(saved).join(','))
+// 非法 systemPromptUpdate / toolUpdate 值被过滤
+const cleanedInvalid = M.cleanForTarget('llm-deepseek', { id: 'test', inputModalities: ['text'], systemPromptUpdate: 'invalid', toolUpdate: 'invalid' })
+ok('非法 systemPromptUpdate 被清洗过滤', cleanedInvalid.systemPromptUpdate === undefined)
+ok('非法 toolUpdate 被清洗过滤', cleanedInvalid.toolUpdate === undefined)
 await M.writeModel(st, 'deepseek-official', { id: 'deepseek-v4-flash', inputModalities: ['text'] })
 const noImage = st._doc['llm-deepseek'].models.find((m) => m.id === 'deepseek-v4-flash')
 ok('纯文本模型不残留 image* 参数', noImage.imagePixelBudget === undefined && noImage.imageMaxBytes === undefined)
@@ -357,6 +376,25 @@ const rmMiss = await M.removeModel(st, 'deepseek-official', 'deepseek-v4-pro')
 ok('删除不存在的模型 → removed=false', rmMiss.removed === false)
 const rmHit = await M.removeModel(st, 'deepseek-official', 'deepseek-v4.1-flash-expires-on-0910')
 ok('删除已配置模型 → removed=true', rmHit.removed === true && rmHit.from === 'models')
+
+console.log('\n④b 手动编辑：DeepSeek 官方账号路由（llm-deepseek-account）')
+const stAccount = makeSettings({
+  'llm-deepseek-account': {
+    models: [
+      { id: 'deepseek-flash', name: 'DeepSeek-V41-Flash', inputModalities: ['text', 'image'] },
+    ],
+  },
+})
+const curAcc = await M.currentModels(stAccount, 'deepseek-account', modelsDev)
+eq('deepseek-account 目标命名空间', curAcc.target.ns, 'llm-deepseek-account')
+eq('deepseek-account 列出已配置模型', curAcc.models.some((m) => m.id === 'deepseek-flash'), true)
+await M.writeModel(stAccount, 'deepseek-account', { id: 'deepseek-custom', name: 'Custom Model', inputModalities: ['text'] })
+ok('deepseek-account 写入模型成功', stAccount._doc['llm-deepseek-account'].models.some((m) => m.id === 'deepseek-custom'))
+await M.writeRouteReasoning(stAccount, 'deepseek-account', { reasoningEffort: 'low', thinking: 'disabled' })
+eq('deepseek-account 路由级推理档位写入', stAccount._doc['llm-deepseek-account'].reasoningEffort, 'low')
+eq('deepseek-account thinking 开关写入', stAccount._doc['llm-deepseek-account'].thinking, 'disabled')
+const provList = M.listConfiguredProviders(stAccount)
+ok('listConfiguredProviders 列出 deepseek-account', provList.some((p) => p.route === 'deepseek-account'))
 
 console.log('\n⑤ 手动编辑：pi-ai（llm-pi-ai）')
 const cur2 = await M.currentModels(st, 'opencode-go', modelsDev)
