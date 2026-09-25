@@ -29,7 +29,23 @@
 - `resolveNamespace(route, st)`：pi-ai 段里有该 route → `llm-pi-ai`；route 是 `deepseek-official` → `llm-deepseek`；否则看清单 `target` 提示，缺省 `llm-pi-ai`。
 - `resolveTarget(route, st)` 给出 `ns / profile / apiKeyEnv / baseURL / hasModelsList`；`toTargetModel()` 把统一发现形状转成目标形状；`cleanForTarget()` 按目标白名单清洗。
 - **DeepSeek 适配器硬规则**（`packages/llm/llm-deepseek/src/adapter.ts`）：收到图片时 `models.find(id)?.inputModalities?.includes('image') !== true` → 抛 `UNSUPPORTED_CONTENT`。**没写 `inputModalities` 就等于纯文本**——这是"手填模型号不支持多模态"的根因。
-- 写入用 `readUserLayer()`（`settings.describe().user`）作基底，只落"用户层"，不把 schema 默认值固化成用户配置；`replace()` 带 `readRevision()` 做冲突检测。
+- 写入用 `readUserLayer()`（`settings.describe().user`）作基底，只落"用户层"，不把 schema 默认值固化成用户配置；`mutate()` 带 `readRevision()` 做冲突检测（见下面「settings 服务形态」）。
+
+## settings 服务形态（0.1.7 破坏性变更，必读）
+
+> **DSH 0.1.7 起 `settings` 是 `SettingsForms`（`@deepseek-ai/dsh-settings`），它投影 Loader 配置、没有 `get(ns)`。**
+> 已在本机运行时核实（`SettingsForms.prototype` 成员）：`describe / update / replace / mutate / writable / documentPath / prepareDocument / configure`——**没有 `get`**。
+> 旧写法 `settings.get('llm-pi-ai').providers` 会抛 `TypeError`，被 `readSection` 的 `try/catch` 吞掉后面就是"**当前未配置任何提供方**"（本插件 v0.0.10 在 0.1.7 上的真实故障：代码没动，框架把 `get` 删了）。
+
+- **读值一律走 `describe({ redactSecrets: false })`**：返回 `{ ns, revision, value, user, schema, ... }`。
+  - `value` = 该条目 volatile 子树的**完整生效值（含 schema 默认值）**；`user` = profile patch 里的**用户覆盖层**。
+  - `describe()` 只列出**当前 ACTIVE 且含 volatile 字段**的条目 → "描述符不存在"就等于"该命名空间没挂载"（`namespaceRegistered` 据此判定，不再看 `get`）。
+  - **`readProviders()` 优先 `user`**：它是"用户真正配了什么"，也是写入基座；拿含默认值的 `value` 回写会把 `defaultContextWindow` 之类固化成用户配置。
+- **写入用 `mutate()` 路径精确改键**（官方 `ui-settings-models/CustomProviderCard` 同款）：pi-ai 写 `[{op:'set', path:['providers', route], value: profile}]`（整体替换该 route、其它 route 不动、能真正删键），deepseek 写 `[{op:'set', path:['models'], value}]`，清空则用 `{op:'unset', ...}` 回落适配器目录。
+  - **不要用 `replace()` 写"完整 user 层"**：0.1.7 的 `replace` 内部是 `mergeLayers(base, input)`，会把**继承层默认值**一并固化成用户配置。它只作为旧版回退保留。
+  - `get()` 仅作为旧版 DSH 回退走 `st.get?.(ns)`，新环境不会命中。
+- 命名空间 = **Loader 条目 id**（`ctx.fiber.entry?.options.id`），不是硬编码常量：`llm-pi-ai` / `llm-deepseek` / `llm-deepseek-api-key` / `llm-deepseek-account` 恰好都同名，但判定一律以 `describe()` 里实际出现的 `ns` 为准。
+- 配置持久化在**当前 profile 的 cordis patch**（`~/.dsh/profiles/<name>/cordis.patch.yml` 的 `config` 块），不再是 `settings.yaml`。
 
 ## 数据流（核心）
 
@@ -78,11 +94,12 @@
 
 > **模态归一化**：`normalizeInput()` 把 models.dev 的 `['text','image','video',...]` 归为 `['text','image']`（含 image）否则 `['text']`。DSH 只支持 text/image，**不要**把 video/pdf/audio 当作 DSH 模态。
 
-> **pi-ai 目录**：`loadPiAiCatalog()` 运行时读 `@earendil-works/pi-ai/dist/providers/data/*.json`（候选路径见 `piAiDataCandidates()`，读不到就降级为"只有清单条目"）。用于让 pi-ai 路由的"编辑现有模型"列出目录条目、并判定能否写 `modelOverrides`。
+> **pi-ai 目录**：`loadPiAiCatalog()` 运行时读 `@earendil-works/pi-ai/dist/providers/data/*.json`（路径由 `piAiDataDirCandidates()` 解析，读不到就降级为"只有清单条目"）。用于让 pi-ai 路由的"编辑现有模型"列出目录条目、并判定能否写 `modelOverrides`。
+> ⚠️ **安装位置在 0.1.7 变了**：DSH Desktop 把它放在 `<安装目录>/resources/app/node_modules/@earendil-works/pi-ai`，旧候选表只找 `@deepseek-ai/dsh/node_modules/...` → **本机全部落空**（诊断恒报"pi-ai 目录数据目录未找到"，编辑页列不出目录模型、`modelOverrides` 判定永远为假）。现在改成"种子目录（`process.resourcesPath/app`、`execPath` 所在目录、cwd、`DSH_HOME`、`DSH_CHECKOUT`、全局 npm）+ 逐级向上找 `node_modules` + pnpm `.pnpm` 布局兜底"，并支持 `DSH_PI_AI_DATA_DIR` 显式覆盖。
 
 ## 关键约定
 
-- **跨 realm 写 settings**：静态 bundle 运行在宿主 sandbox realm，`settings.get` 拿到的是深冻结对象。写入必须用 `makeHostPlain`（`Object.create(null)` 递归重建）重建后再 `settings.replace(...)`，否则 dsh-settings 的 `isPlainObject` 检查会拒绝。参考 dsh-model-pro。
+- **跨 realm 写 settings**：静态 bundle 运行在宿主 sandbox realm，从 `describe().user` 拿到的是深冻结对象。写入必须用 `makeHostPlain`（`Object.create(null)` 递归重建）重建后再交给 `settings.mutate(...)`，否则 dsh-settings 的 `isPlainObject` 检查会拒绝。参考 dsh-model-pro。**注意 `mutate` 会整段替换目标命名的文档对象，断言/后续读取必须现取，不要持有旧引用。**
 - **apply 补 api/baseURL**：目录/模板提供方的 profile 可能没显式 `api`/`baseURL`（继承 pi-ai 目录）。写入前用 `manifestProvider(route)` 兜底补齐，否则目录外的新模型（如 vision-exp）会因目录协议不统一而 `resolveRouteModels` 校验失败。
 - **前端口径**：每页 80 行、结果 ≤200 才自动全选（海量防卡顿）、搜索 300ms 防抖。改这些常量在 `src/client/Page.tsx`（`PAGE_SIZE`/`AUTO_SELECT_LIMIT`）。
 - **「编辑现有模型」的草稿不变式（血泪）**：每张卡片各自持有一份草稿，`dirty` = 草稿 vs 服务端。所以**保存/删除某一条之后，只能用服务端返回值重同步那一条**（`loadCurrent({ syncIds: [id], quiet: true })`），绝不能整体重建 `drafts`——那会把其它卡片上还没保存的编辑**悄悄丢掉**，而 dirty 随之变假，于是所有按钮一起显示「已保存」，用户以为都存进去了（真的发生过，用户报的就是这个）。草稿逻辑集中在 `src/client/drafts.ts`（纯函数，便于回归），关键 API 的语义都写在各自 JSDoc 里：`mergeDrafts`（局部同步）、`draftIsDirty`（`draftOnly` 必须算脏，否则手填模型存不下去）、`canonicalDraft`（dirty 必须与用户操作顺序无关：efforts/input 顺序不同不算脏）。改这块务必跑 `npm run verify:client` + `npm run verify:client-dom`。
@@ -91,7 +108,8 @@
 
 ## 构建（务必注意）
 
-`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（发现链路 `hy4-preview-f` + 编辑页建议值按精确 id 区分变体）/ **同名前缀消歧（`cn:`/`global:` 同名变体必须可分辨，含幂等与唯一性兜底）** / 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
+`npm run build` = `node scripts/build.mjs`（host tsc 产出 `lib/` + client tsdown）；`npm run typecheck` = `node scripts/build.mjs --noEmit`；`npm run build:client` = `tsdown`；`npm run verify` = `node scripts/verify.mjs`（**host 回归测试**：**settings 服务形态（0.1.7 无 `get`，读值走 `describe`、写入走 `mutate`，且写入不得固化继承层默认值）** / 命名空间识别 / 名字级匹配（内测模型号多模态）/ 线上清单端点与档位后缀等效（antigravity 回归）/ 区域前缀·同名优先·多数派（WorkBuddy 回归）/ 线上声明优先（发现链路 `hy4-preview-f` + 编辑页建议值按精确 id 区分变体）/ **同名前缀消歧（`cn:`/`global:` 同名变体必须可分辨，含幂等与唯一性兜底）** / 双 schema 手动编辑往返，用假 settings 驱动已构建产物，不启动 DSH、不联网）。
+> ⚠️ **测试桩必须复刻真实服务形状**：`makeSettings()` **故意不提供 `get`**。桩比框架"好用"就会掩盖线上故障——v0.0.10 那 125 项全绿、线上却显示"当前未配置任何提供方"，就是因为桩提供了框架已经删掉的 `get`。改动 `api.ts` 的 settings 交互后，先确认桩和 `SettingsForms.prototype` 一致。
 `npm run verify:client` = `node scripts/verify-client.mjs`（**client 草稿逻辑回归**，直接 import `src/client/drafts.ts` 的纯函数：保存某条后其余卡片的未保存编辑必须保留、按钮不得误报「已保存」、手填模型必须可保存、dirty 与操作顺序无关、两套 schema 的提交形状；靠 Node 24 的 TS 类型擦除直接跑 `.ts`）；
 `npm run verify:client-dom` = `node scripts/verify-client-dom.mjs`（**真实渲染回归**：jsdom + 真实 React 渲染已构建的 `lib/client.js`，打桩 fetch 复现「改三条 → 只保存一条」，断言界面按钮文案与草稿未被冲掉；依赖 DSH checkout 的 jsdom/react，缺依赖时**跳过**不算失败）。
 

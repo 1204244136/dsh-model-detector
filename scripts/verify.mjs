@@ -9,7 +9,8 @@
  * 运行：npm run verify（需先 npm run build 产出 lib/）
  * 说明：用假的 settings 服务驱动**已构建产物**，不启动 DSH、不写真实配置。
  */
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -32,16 +33,77 @@ const ok = (label, cond, extra = '') => {
 }
 const eq = (label, got, want) => ok(label, JSON.stringify(got) === JSON.stringify(want), `got=${JSON.stringify(got)} want=${JSON.stringify(want)}`)
 
-/** 假 settings 服务：只实现插件用到的四个方法（get/describe/replace/writable）。 */
-function makeSettings(seed) {
-  const doc = structuredClone(seed)
+/** 深合并（数组整体替换，与 dsh-settings 的 mergeLayers 同语义）。 */
+const mergeDeep = (under, over) => {
+  if (under === null || typeof under !== 'object' || Array.isArray(under)) return over
+  if (over === null || typeof over !== 'object' || Array.isArray(over)) return over
+  const out = { ...under }
+  for (const [k, v] of Object.entries(over)) out[k] = k in out ? mergeDeep(out[k], v) : v
+  return out
+}
+const setPath = (root, path, value) => {
+  let node = root
+  for (const key of path.slice(0, -1)) {
+    if (node[key] === null || typeof node[key] !== 'object') node[key] = {}
+    node = node[key]
+  }
+  node[path[path.length - 1]] = value
+}
+const unsetPath = (root, path) => {
+  let node = root
+  for (const key of path.slice(0, -1)) {
+    if (node[key] === null || typeof node[key] !== 'object') return
+    node = node[key]
+  }
+  const last = path[path.length - 1]
+  if (Array.isArray(node)) node.splice(Number(last), 1)
+  else delete node[last]
+}
+
+/**
+ * 假 settings 服务：**复刻 DSH ≥0.1.7 的 `SettingsForms`**（`@deepseek-ai/dsh-settings`）。
+ *
+ * ⚠️ 这里**故意不提供 `get(ns)`** —— 0.1.7 的 settings 服务就是这么做的：它只**投影
+ * Loader 配置**（`describe / update / replace / mutate`），值持久化到当前 profile 的
+ * cordis patch，服务本身不再持有 settings.yaml 的 section。
+ *
+ * 旧版本插件用 `settings.get('llm-pi-ai').providers` 读提供方；而当时的桩提供了 `get`，
+ * 于是 125 项回归全绿、线上却显示「当前未配置任何提供方」（TypeError 被 catch 吞掉）。
+ * 桩必须跟着框架走，否则测的是一个已经不存在、或语义已变的 API。
+ *
+ * @param seed    profile 覆盖层（用户真正写下的配置）——也是写入落点。
+ * @param base    继承层（bundle 默认值）：`describe().value` = base ∪ user，`user` 只含 seed，
+ *                用来守"写入不得把继承层默认值固化成用户配置"。
+ * @param entries 已挂载的条目（`describe()` 只列出它们），默认 = seed 的键。
+ */
+function makeSettings(seed, { base = {}, entries } = {}) {
+  const doc = structuredClone(seed ?? {})
+  const inherited = structuredClone(base ?? {})
+  const mounted = entries ?? Object.keys(doc)
   const revisions = {}
+  const plain = (v) => (v === undefined ? undefined : structuredClone(v))
+  const bump = (ns) => { revisions[ns] = (revisions[ns] ?? 0) + 1 }
   return {
     writable: true,
-    get: (ns) => doc[ns],
-    describe: () => Object.keys(doc).map((ns) => ({ ns, revision: revisions[ns] ?? 0, user: doc[ns] })),
-    replace: async (ns, section) => { revisions[ns] = (revisions[ns] ?? 0) + 1; doc[ns] = section },
+    describe: () => mounted.map((ns) => ({
+      ns,
+      revision: revisions[ns] ?? 0,
+      value: mergeDeep(plain(inherited[ns]) ?? {}, plain(doc[ns]) ?? {}),
+      user: plain(doc[ns]),
+    })),
+    update: async (ns, patch) => { bump(ns); doc[ns] = mergeDeep(plain(doc[ns]) ?? {}, plain(patch)) },
+    replace: async (ns, section) => { bump(ns); doc[ns] = plain(section) },
+    mutate: async (ns, ops) => {
+      bump(ns)
+      const cur = plain(doc[ns]) ?? {}
+      for (const op of ops) {
+        if (op.op === 'unset') unsetPath(cur, op.path)
+        else setPath(cur, op.path, plain(op.value))
+      }
+      doc[ns] = cur
+    },
     _doc: doc,
+    _base: inherited,
   }
 }
 
@@ -65,7 +127,80 @@ const st = makeSettings({
   },
 })
 
+// pi-ai 目录数据用临时目录注入（`DSH_PI_AI_DATA_DIR` 是插件认的显式覆盖）：
+// 这样「目录路由 → modelOverrides」这条链路也能被测到，而不是永远"跳过"。
+// 真实环境里这份数据躺在 DSH 安装目录下（见 api.ts 的 piAiDataDirCandidates）。
+const piAiTmp = mkdtempSync(join(tmpdir(), 'dsh-md-pi-ai-'))
+writeFileSync(join(piAiTmp, 'deepseek.json'), JSON.stringify({
+  'openai-completions': {
+    'deepseek-v4-flash': { name: 'DeepSeek V4 Flash', input: ['text'], contextWindow: 1000000, maxTokens: 384000 },
+    'deepseek-v4-pro': { name: 'DeepSeek V4 Pro', input: ['text', 'image'] },
+  },
+}))
+writeFileSync(join(piAiTmp, 'opencode-go.json'), JSON.stringify({
+  'openai-completions': { 'deepseek-v4-flash': { name: 'DeepSeek V4 Flash' } },
+}))
+process.env.DSH_PI_AI_DATA_DIR = piAiTmp
+
 console.log(`dsh-model-detector v${pkg.version} — host 回归`)
+
+console.log('\n⓪ settings 服务形态（DSH ≥0.1.7：没有 get()，值一律走 describe()）')
+// 本段是「当前未配置任何提供方」那次线上故障的直接守卫：
+// 0.1.7 的 settings 是 SettingsForms（只有 describe/update/replace/mutate），
+// 旧代码 settings.get(ns) 抛 TypeError 被 catch 吞掉 → providers 恒为空。
+ok('测试桩不含 get（与 0.1.7 的真实服务一致）', typeof st.get !== 'function')
+const listed = M.listConfiguredProviders(st)
+ok('没有 get() 也能列出提供方', listed.length > 0, JSON.stringify(listed.map((p) => p.route)))
+ok('列出 pi-ai 已配置路由', listed.some((p) => p.route === 'opencode-go'), JSON.stringify(listed.map((p) => p.route)))
+ok('列出 DeepSeek 官方路由', listed.some((p) => p.route === 'deepseek-official'))
+eq('modelCount 从配置里读', listed.find((p) => p.route === 'opencode-go')?.modelCount, 1)
+// 读的是**用户覆盖层**：继承层（bundle 默认值）不得混进"我配置了什么"
+const stInherit = makeSettings(
+  { 'llm-pi-ai': { providers: { wb: { api: 'openai-completions', baseURL: 'http://127.0.0.1:7863/v1', models: [] } } } },
+  { base: { 'llm-pi-ai': { providers: { wb: { api: 'openai-completions', baseURL: 'http://127.0.0.1:7863/v1', models: [], defaultContextWindow: 262144, defaultMaxTokens: 32768 } } } } },
+)
+ok('生效值里确实带着继承层默认值（桩有效）',
+  stInherit.describe()[0].value.providers.wb.defaultContextWindow === 262144)
+await M.writeModel(stInherit, 'wb', { id: 'm1', name: 'M1', input: ['text'] })
+const wbDoc = stInherit._doc['llm-pi-ai'].providers.wb
+ok('写入不把继承层默认值固化成用户配置',
+  wbDoc.defaultContextWindow === undefined && wbDoc.defaultMaxTokens === undefined, JSON.stringify(Object.keys(wbDoc)))
+ok('写入确实落到了该模型', wbDoc.models.some((m) => m.id === 'm1'))
+// 只改点名的那一个 provider，别的 provider 一个字段都不能动
+const stMulti = makeSettings({
+  'llm-pi-ai': {
+    providers: {
+      wb: { api: 'openai-completions', baseURL: 'http://127.0.0.1:7863/v1', models: [] },
+      other: { api: 'anthropic-messages', baseURL: 'http://127.0.0.1:9999' },
+    },
+  },
+})
+await M.writeModel(stMulti, 'wb', { id: 'm2', name: 'M2', input: ['text'] })
+// 写入会替换该命名空间的文档对象，断言必须**现取**（真实框架同样是重新解析配置）
+const providersOf = (s) => s._doc['llm-pi-ai'].providers
+eq('改一个 provider 不动另一个', providersOf(stMulti).other.baseURL, 'http://127.0.0.1:9999')
+ok('目标 provider 已更新', providersOf(stMulti).wb.models.some((m) => m.id === 'm2'))
+await M.applyModels(stMulti, 'wb', [])
+ok('apply 空列表 → 删掉 models 键（回落适配器目录），而不是写一个空数组',
+  providersOf(stMulti).wb !== undefined && !('models' in providersOf(stMulti).wb), JSON.stringify(providersOf(stMulti).wb))
+// 真实形状：本机 web profile 的 llm-pi-ai 配了这 5 个路由（含本地代理），
+// 修复前它们在界面上一条都看不到（"当前未配置任何提供方"）。
+const stReal = makeSettings({
+  'llm-pi-ai': {
+    providers: {
+      volcengine: { displayName: '火山方舟', apiKeyEnv: 'VOLCENGINE_API_KEY', api: 'openai-completions', baseURL: 'https://ark.cn-beijing.volces.com/api/coding/v3', models: [{ id: 'deepseek-v4-1-flash-260910' }] },
+      antigravity: { apiKeyEnv: 'ANTIGRAVITY_API_KEY', api: 'anthropic-messages', baseURL: 'http://127.0.0.1:8046' },
+      wb: { apiKeyEnv: 'WB_API_KEY', api: 'openai-completions', baseURL: 'https://wb.example/v1', models: [{ id: 'cn:deepseek-v4.1-flash' }, { id: 'global:deepseek-v4.1-flash' }] },
+      axis: { apiKeyEnv: 'AXIS_API_KEY', api: 'openai-completions', baseURL: 'http://127.0.0.1:8317/v1' },
+      mimo: { apiKeyEnv: 'MIMO_API_KEY', api: 'openai-completions', baseURL: 'https://mimo.example/v1' },
+    },
+  },
+})
+const realList = M.listConfiguredProviders(stReal)
+eq('真实配置：5 个提供方全部列出', realList.length, 5)
+eq('真实配置：路由与顺序一致', realList.map((p) => p.route), ['volcengine', 'antigravity', 'wb', 'axis', 'mimo'])
+eq('真实配置：带 models 的路由 modelCount 正确', realList.find((p) => p.route === 'wb')?.modelCount, 2)
+ok('真实配置：每条都能解析出写入目标', realList.every((p) => M.resolveTarget(p.route, stReal)?.ns === 'llm-pi-ai'))
 
 console.log('\n① 命名空间识别')
 eq('deepseek-official → llm-deepseek', M.resolveNamespace('deepseek-official', st), 'llm-deepseek')

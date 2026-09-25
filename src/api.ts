@@ -118,12 +118,44 @@ export function isDeepSeekNamespace(ns: string): boolean {
   return ns === 'llm-deepseek' || ns === 'llm-deepseek-api-key' || ns === 'llm-deepseek-account' || ns.startsWith('llm-deepseek')
 }
 
-/** settings 服务子集（与 dsh-model-pro 相同，另加 describe 以读原始 user 层）。 */
+/**
+ * 一个 settings 描述符（DSH ≥0.1.7 `SettingsForms.describe()` 的形状）。
+ *
+ * `value` 是该条目 volatile 子树的**完整生效值**（含 schema 默认值），
+ * `user` 是 profile patch 里**用户显式写下的覆盖层**——两者都不是"原始 settings.yaml section"。
+ */
+export interface SettingsDescriptorLike {
+  ns: string
+  revision: number
+  value?: unknown
+  user?: unknown
+}
+
+/** `mutate()` 的路径操作（DSH ≥0.1.7）。 */
+export type SettingsPathOpLike =
+  | { op: 'set'; path: readonly string[]; value: unknown }
+  | { op: 'unset'; path: readonly string[] }
+
+/**
+ * settings 服务子集。
+ *
+ * ⚠️ **DSH 0.1.7 起 `settings` 是 `SettingsForms`，它投影 Loader 配置、没有 `get(ns)`**：
+ * 表单值持久化到当前 profile 的 cordis patch（`cordis.patch.yml` 的 `config` 块），
+ * 服务本身只提供 `describe / update / replace / mutate`。旧版写法
+ * `settings.get('llm-pi-ai').providers` 在这里会抛 TypeError，被 `try/catch` 吞掉后
+ * 表现为**"当前未配置任何提供方"**（本插件真实踩过：代码没变，框架把 get 删了）。
+ *
+ * 因此：读值一律走 `describe()`（`value` = 生效值、`user` = 覆盖层），
+ * 写入优先 `mutate()`（路径精确、不固化继承层默认值），`get()` 只作为旧版回退保留。
+ */
 export interface SettingsService {
-  get(ns: string): Record<string, unknown> | undefined
-  readonly writable: boolean
-  replace(ns: string, section: unknown, expectedRevision?: number): Promise<void>
-  describe?(options?: { redactSecrets?: boolean }): Array<{ ns: string; revision: number; user?: unknown }>
+  readonly writable?: boolean
+  describe(options?: { redactSecrets?: boolean }): SettingsDescriptorLike[]
+  update?(ns: string, patch: object, expectedRevision?: number): Promise<void>
+  replace?(ns: string, section: unknown, expectedRevision?: number): Promise<void>
+  mutate?(ns: string, ops: readonly SettingsPathOpLike[], expectedRevision?: number): Promise<void>
+  /** 仅旧版 DSH（settings.yaml section 时代）：在没有 `describe()` 时才使用。 */
+  get?(ns: string): Record<string, unknown> | undefined
 }
 
 /** HostCtx 子集。 */
@@ -146,35 +178,106 @@ function makeHostPlain<T>(obj: T): any {
   return out
 }
 
-/** 该命名空间是否已在宿主注册（未注册时写入必失败，提前判掉）。 */
-export function namespaceRegistered(st: SettingsService | undefined, ns: Namespace): boolean {
-  if (st === undefined) return false
-  try { return st.get(ns) !== undefined } catch { return false }
+/**
+ * 取一个命名空间的 settings 描述符（未注册该条目 → undefined）。
+ *
+ * 这是 0.1.7+ 唯一的"注册与否 + 取值"入口：`describe()` 只列出**当前 ACTIVE 且含
+ * volatile 字段**的 Loader 条目，所以"描述符不存在"就等于"这个命名空间没被挂载"。
+ */
+function settingsDescriptor(st: SettingsService | undefined, ns: Namespace): SettingsDescriptorLike | undefined {
+  if (st === undefined || typeof st.describe !== 'function') return undefined
+  try {
+    const list = st.describe({ redactSecrets: false })
+    return Array.isArray(list) ? list.find((x) => x && x.ns === ns) : undefined
+  } catch { return undefined }
 }
 
-/** 读取一个命名空间的已解析值（未注册 → undefined）。 */
+/** 取值必须是普通对象才算数（数组/null 视为"没有这一段"）。 */
+function asRecord(v: unknown): Record<string, any> | undefined {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : undefined
+}
+
+/** 读取一个命名空间的**完整生效值**（新 API 的 `describe().value`；旧版回退 `get()`）。 */
 function readSection(st: SettingsService | undefined, ns: Namespace): Record<string, any> | undefined {
   if (st === undefined) return undefined
-  try {
-    const v = st.get(ns)
-    return v && typeof v === 'object' ? (v as Record<string, any>) : undefined
-  } catch { return undefined }
+  const d = settingsDescriptor(st, ns)
+  if (d !== undefined) return asRecord(d.value) ?? {}
+  // 旧版 DSH：settings.yaml section
+  try { return asRecord(st.get?.(ns)) } catch { return undefined }
 }
 
 /** 读取一个命名空间的原始 user 层（用于"只改我改过的"写入，避免把默认值固化成用户配置）。 */
 function readUserLayer(st: SettingsService | undefined, ns: Namespace): Record<string, any> | undefined {
-  if (st === undefined || typeof st.describe !== 'function') return undefined
-  try {
-    const d = st.describe({ redactSecrets: false }).find((x) => x.ns === ns)
-    const user = d?.user
-    return user && typeof user === 'object' && !Array.isArray(user) ? (user as Record<string, any>) : undefined
-  } catch { return undefined }
+  const d = settingsDescriptor(st, ns)
+  if (d !== undefined) return asRecord(d.user)
+  return undefined
 }
 
 /** 读取命名空间当前的 revision（写冲突检测用；不可得 → undefined）。 */
 function readRevision(st: SettingsService | undefined, ns: Namespace): number | undefined {
-  if (st === undefined || typeof st.describe !== 'function') return undefined
-  try { return st.describe({ redactSecrets: false }).find((x) => x.ns === ns)?.revision } catch { return undefined }
+  const d = settingsDescriptor(st, ns)
+  return d === undefined ? undefined : d.revision
+}
+
+/** 该命名空间是否已在宿主注册（未注册时写入必失败，提前判掉）。 */
+export function namespaceRegistered(st: SettingsService | undefined, ns: Namespace): boolean {
+  if (st === undefined) return false
+  if (settingsDescriptor(st, ns) !== undefined) return true
+  try { return st.get?.(ns) !== undefined } catch { return false }
+}
+
+/**
+ * 写入命名空间下**若干顶层键**（路径精确）。
+ *
+ * 用 `mutate()` 而不是 `replace()`：后者在 0.1.7 的语义是
+ * "重置 volatile 字段后用传入的 section 覆盖"，其内部会把**继承层**（bundle 默认值）
+ * 一并 merge 进用户覆盖层——照抄旧写法会把 schema 默认值固化成用户配置。
+ * `mutate` 只动我们点名的键；值为 `undefined` 时用 `unset`（删键 = 回落继承层）。
+ * 旧版没有 `mutate` 时退回 `replace(user 层整体替换)`，保持老行为。
+ */
+async function writeSectionKeys(
+  st: SettingsService,
+  ns: Namespace,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const revision = readRevision(st, ns)
+  const entries = Object.entries(patch)
+  if (typeof st.mutate === 'function') {
+    const ops: SettingsPathOpLike[] = entries.map(([key, value]) => (value === undefined
+      ? { op: 'unset', path: [key] }
+      : { op: 'set', path: [key], value: makeHostPlain(value) }))
+    if (ops.length > 0) await st.mutate(ns, ops, revision)
+    return
+  }
+  if (typeof st.replace !== 'function') throw new Error('settings 服务不支持写入（既无 mutate 也无 replace）')
+  const next = { ...(readUserLayer(st, ns) ?? {}) }
+  for (const [key, value] of entries) { if (value === undefined) delete next[key]; else next[key] = makeHostPlain(value) }
+  await st.replace(ns, makeHostPlain(next), revision)
+}
+
+/**
+ * 写入 llm-pi-ai 里**某一个 provider 的 profile**（`set ['providers', route]`）。
+ *
+ * 官方设置页（`ui-settings-models/CustomProviderCard`）就是这条路径：
+ * 整体替换该 route 的 profile，**其它 route 原样保留**，且能真正删掉键
+ * （如清空 `models` 让它回落适配器目录）——`update()` 的递归合并做不到删键。
+ */
+async function writeProviderProfile(
+  st: SettingsService,
+  route: string,
+  profile: Record<string, unknown>,
+): Promise<void> {
+  const revision = readRevision(st, 'llm-pi-ai')
+  if (typeof st.mutate === 'function') {
+    await st.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', route], value: makeHostPlain(profile) }], revision)
+    return
+  }
+  if (typeof st.replace !== 'function') throw new Error('settings 服务不支持写入（既无 mutate 也无 replace）')
+  const providers = { ...readProviders(st), [route]: profile }
+  const section = readSection(st, 'llm-pi-ai')
+  const preserved: Record<string, unknown> = {}
+  if (section) for (const k of Object.keys(section)) if (k !== 'providers') preserved[k] = section[k]
+  await st.replace('llm-pi-ai', makeHostPlain({ ...preserved, providers }), revision)
 }
 
 /** 归一化路由键（大小写/下划线/空格 → 连字符）。 */
@@ -193,8 +296,7 @@ const normalizeRouteKey = (s: string): string => s.trim().toLowerCase().replace(
  */
 export function resolveNamespace(route: string, st: SettingsService | undefined): Namespace | undefined {
   const key = normalizeRouteKey(route)
-  const pi = readSection(st, 'llm-pi-ai')
-  const hasPiRoute = !!(pi?.providers && typeof pi.providers === 'object' && (pi.providers as any)[route])
+  const hasPiRoute = !!readProviders(st)[route]
   if (hasPiRoute) return 'llm-pi-ai'
   if (key === DEEPSEEK_ACCOUNT_PROVIDER) return 'llm-deepseek-account'
   if (key === DEEPSEEK_PROVIDER) {
@@ -261,11 +363,21 @@ export function resolveTarget(route: string, st: SettingsService | undefined): R
   }
 }
 
-/** 读取 llm-pi-ai 提供方表。 */
+/**
+ * 读取 llm-pi-ai 提供方表。
+ *
+ * **优先用户覆盖层**（`describe().user.providers`）：它才是"用户真正配了什么"，
+ * 也是写入时的安全基座——`value` 是**含 schema 默认值**的生效值，拿它回写会把
+ * `defaultContextWindow` 之类的默认值固化成用户配置。覆盖层里完全没有 `providers`
+ * 键时才退回生效值（例如 route 只由 bundle 层提供）。
+ */
 export function readProviders(st: SettingsService | undefined): Record<string, any> {
+  const d = settingsDescriptor(st, 'llm-pi-ai')
+  const user = asRecord(asRecord(d?.user)?.providers)
+  if (user !== undefined) return user
   const section = readSection(st, 'llm-pi-ai')
-  if (section?.providers && typeof section.providers === 'object') return section.providers
-  return {}
+  const providers = asRecord(section?.providers)
+  return providers ?? {}
 }
 
 /**
@@ -1107,26 +1219,20 @@ export async function applyModels(st: SettingsService, route: string, models: Ar
     .map((m) => cleanForTarget(target.ns, toTargetModel(target.ns, m), true))
     .filter((m): m is Record<string, unknown> => m !== null)
   if (isDeepSeekNamespace(target.ns)) {
-    const user = readUserLayer(st, target.ns as Namespace) ?? {}
-    const next: Record<string, unknown> = { ...user, ...(cleaned.length > 0 ? { models: makeHostPlain(cleaned) } : {}) }
-    if (cleaned.length === 0) delete next.models
-    await st.replace(target.ns, makeHostPlain(next), readRevision(st, target.ns as Namespace))
+    // 空列表 = 删键，回落到适配器内置目录（不是写一个空 models）
+    await writeSectionKeys(st, target.ns as Namespace, { models: cleaned.length > 0 ? cleaned : undefined })
     return { ns: target.ns, count: cleaned.length }
   }
-  const preserved: Record<string, unknown> = {}
-  const section = readSection(st, 'llm-pi-ai')
-  if (section) for (const k of Object.keys(section)) if (k !== 'providers') preserved[k] = section[k]
   const providers = { ...readProviders(st) }
   const cur = providers[route]
   if (cur && typeof cur === 'object') {
     const enriched: Record<string, unknown> = { ...cur }
     if (!enriched.api && target.mp?.api) enriched.api = target.mp.api
     if (!enriched.baseURL && target.mp?.baseURL) enriched.baseURL = target.mp.baseURL
-    if (cleaned.length > 0) enriched.models = makeHostPlain(cleaned)
+    if (cleaned.length > 0) enriched.models = cleaned
     else delete enriched.models
-    providers[route] = enriched
+    await writeProviderProfile(st, route, enriched)
   }
-  await st.replace('llm-pi-ai', makeHostPlain({ ...preserved, providers }))
   return { ns: target.ns, count: cleaned.length }
 }
 
@@ -1137,26 +1243,69 @@ let piAiCatalog: Record<string, Record<string, ManifestModel>> | null | undefine
 /** pi-ai 目录加载诊断（失败原因，供 /current 展示）。 */
 let piAiCatalogError: string | undefined
 
-/** 候选目录路径（按可靠性排序）：插件自身依赖 → DSH 安装 → checkout → 全局 npm。 */
-function piAiDataCandidates(): string[] {
+/** 用正斜杠拼路径：Node 在 Windows 上同样接受。 */
+const joinPath = (...parts: string[]): string => parts
+  .filter((p) => p !== '')
+  .map((p, i) => (i === 0 ? p.replace(/[\\/]+$/, '') : p.replace(/^[\\/]+/, '').replace(/[\\/]+$/, '')))
+  .join('/')
+
+/** 取文件路径的目录部分。 */
+const dirOf = (p: string): string => p.replace(/[\\/][^\\/]*$/, '')
+
+/** 某个"根目录"下的 pi-ai 目录数据目录（`<root>/node_modules/@earendil-works/pi-ai/dist/providers/data`）。 */
+const piAiDataUnder = (root: string): string =>
+  joinPath(root, 'node_modules/@earendil-works/pi-ai/dist/providers/data')
+
+/**
+ * pi-ai 已安装目录的数据目录候选（按可靠性排序）。
+ *
+ * ⚠️ **0.1.7 起安装位置变了**：pi-ai 仍在 `dist/providers/data/*.json`，但 DSH Desktop
+ * 把它放在 `<安装目录>/resources/app/node_modules/@earendil-works/pi-ai`，而旧候选表全在
+ * 找 `@deepseek-ai/dsh/node_modules/...` —— 本机实测**全部落空**（诊断一直报
+ * "pi-ai 目录数据目录未找到"），编辑页因此永远列不出目录模型、也判不出 `modelOverrides`。
+ *
+ * 这里改成"种子目录 + 逐级向上找 node_modules"，并对 pnpm 的
+ * `node_modules/.pnpm/@earendil-works+pi-ai@<ver>/...` 布局兜底，避免再被安装布局变化打死。
+ */
+function piAiDataDirCandidates(fs: any): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   const push = (p?: string) => { if (p && !seen.has(p)) { seen.add(p); out.push(p) } }
-  const REL = 'node_modules/@earendil-works/pi-ai/dist/providers/data'
+  // Electron 专有（DSH Desktop 的 host 跑在 Electron 的 Node service 里），Node 类型里没有
+  const resourcesPath: unknown = (process as unknown as { resourcesPath?: unknown }).resourcesPath
+
+  // ① 显式覆盖（排最前）
   push(process.env.DSH_PI_AI_DATA_DIR)
-  // profile 里的 DSH 安装（cwd 通常就是 profile 目录）
-  if (process.env.DSH_HOME) push(`${process.env.DSH_HOME}/profiles/web/node_modules/@deepseek-ai/dsh/${REL}`)
-  push(`./node_modules/@deepseek-ai/dsh/${REL}`)
-  // DSH 安装：全局 npm 前缀下的 @deepseek-ai/dsh/node_modules
-  const nm = `node_modules/@deepseek-ai/dsh/${REL}`
-  if (process.env.APPDATA) push(`${process.env.APPDATA}/npm/${nm}`)
-  if (process.env.HOME) push(`${process.env.HOME}/.npm-global/lib/${nm}`)
-  push(`/usr/local/lib/${nm}`)
-  push(`/usr/lib/${nm}`)
-  // checkout（源码树）
-  if (process.env.DSH_CHECKOUT) {
-    push(`${process.env.DSH_CHECKOUT}/node_modules/@earendil-works/pi-ai/dist/providers/data`)
-    push(`${process.env.DSH_CHECKOUT}/vendor/pi-ai/dist/providers/data`)
+
+  // ② 种子目录：Electron 桌面版 / 全局安装 / checkout / profile
+  const seeds = [
+    process.env.DSH_PI_AI_ROOT,
+    typeof resourcesPath === 'string' && resourcesPath ? joinPath(resourcesPath, 'app') : undefined,
+    typeof process.execPath === 'string' && process.execPath ? dirOf(process.execPath) : undefined,
+    process.cwd(),
+    process.env.DSH_HOME ? joinPath(process.env.DSH_HOME, 'profiles/web') : undefined,
+    process.env.DSH_HOME,
+    process.env.DSH_CHECKOUT,
+    process.env.APPDATA ? joinPath(process.env.APPDATA, 'npm/node_modules/@deepseek-ai/dsh') : undefined,
+    process.env.HOME ? `${process.env.HOME}/.npm-global/lib/node_modules/@deepseek-ai/dsh` : undefined,
+  ].filter((s): s is string => typeof s === 'string' && s !== '')
+
+  for (const seed of seeds) {
+    // 种子自身及其祖先的 node_modules（覆盖 `<root>/node_modules` 与嵌套安装）
+    let dir = seed
+    for (let i = 0; i < 12 && dir !== '' && dir !== dirOf(dir); i++) {
+      push(piAiDataUnder(dir))
+      dir = dirOf(dir)
+    }
+    push(piAiDataUnder(dir))
+    // pnpm：依赖装在 <seed>/node_modules/.pnpm/<name>@<version>/node_modules/...
+    try {
+      for (const entry of fs.readdirSync(joinPath(seed, 'node_modules/.pnpm')) as string[]) {
+        if (/^@earendil-works\+pi-ai@/.test(entry)) {
+          push(joinPath(seed, 'node_modules/.pnpm', entry, 'node_modules/@earendil-works/pi-ai/dist/providers/data'))
+        }
+      }
+    } catch { /* 没有 .pnpm 目录：跳过 */ }
   }
   return out
 }
@@ -1194,7 +1343,10 @@ export async function loadPiAiCatalog(): Promise<Record<string, Record<string, M
   if (piAiCatalog !== undefined) return piAiCatalog ?? {}
   try {
     const fs: any = await import('node:fs')
-    for (const dir of piAiDataCandidates()) {
+    const candidates = piAiDataDirCandidates(fs)
+    let tried = 0
+    for (const dir of candidates) {
+      tried += 1
       try {
         if (!fs.existsSync(dir)) continue
         const out: Record<string, Record<string, ManifestModel>> = {}
@@ -1209,7 +1361,7 @@ export async function loadPiAiCatalog(): Promise<Record<string, Record<string, M
         if (Object.keys(out).length > 0) { piAiCatalog = out; piAiCatalogError = undefined; return out }
       } catch { /* 换下一个候选目录 */ }
     }
-    piAiCatalogError = 'pi-ai 目录数据目录未找到'
+    piAiCatalogError = `pi-ai 目录数据目录未找到（已试 ${tried} 个候选路径；可用 DSH_PI_AI_DATA_DIR 显式指定）`
   } catch (e: any) {
     piAiCatalogError = String(e?.message ?? e)
   }
@@ -1403,7 +1555,7 @@ export async function writeModel(
     const i = cur.findIndex((m) => m && m.id === id)
     if (i >= 0) cur[i] = { ...cur[i], ...cleaned }
     else cur.push(cleaned)
-    await st.replace(target.ns, makeHostPlain({ ...user, models: cur }), readRevision(st, target.ns as Namespace))
+    await writeSectionKeys(st, target.ns as Namespace, { models: cur })
     return { ns: target.ns, key: 'models' }
   }
 
@@ -1418,20 +1570,16 @@ export async function writeModel(
     const ov: Record<string, any> = { ...(cur.modelOverrides && typeof cur.modelOverrides === 'object' ? cur.modelOverrides : {}) }
     const prev = ov[id] && typeof ov[id] === 'object' ? ov[id] : {}
     const next = cleanForTarget(target.ns, { ...cleaned }, false)
-    ov[id] = makeHostPlain(next ?? prev)
-    cur.modelOverrides = makeHostPlain(ov)
+    ov[id] = next ?? prev
+    cur.modelOverrides = ov
   } else {
     const list: any[] = Array.isArray(cur.models) ? [...cur.models] : []
     const i = list.findIndex((m) => m && m.id === id)
     if (i >= 0) list[i] = { ...list[i], ...cleaned }
     else list.push(cleaned)
-    cur.models = makeHostPlain(list)
+    cur.models = list
   }
-  providers[route] = cur
-  const preserved: Record<string, unknown> = {}
-  const section = readSection(st, 'llm-pi-ai')
-  if (section) for (const k of Object.keys(section)) if (k !== 'providers') preserved[k] = section[k]
-  await st.replace('llm-pi-ai', makeHostPlain({ ...preserved, providers }))
+  await writeProviderProfile(st, route, cur)
   return { ns: target.ns, key: useOverrides ? 'modelOverrides' : 'models' }
 }
 
@@ -1444,7 +1592,7 @@ export async function removeModel(st: SettingsService, route: string, id: string
     const cur: any[] = Array.isArray(user.models) ? [...user.models] : []
     const next = cur.filter((m) => !(m && m.id === id))
     if (next.length === cur.length) return { removed: false, from: '' }
-    await st.replace(target.ns, makeHostPlain({ ...user, models: next }), readRevision(st, target.ns as Namespace))
+    await writeSectionKeys(st, target.ns as Namespace, { models: next.length > 0 ? next : undefined })
     return { removed: true, from: 'models' }
   }
   const providers = { ...readProviders(st) }
@@ -1461,11 +1609,7 @@ export async function removeModel(st: SettingsService, route: string, id: string
     from = 'modelOverrides'
   }
   if (!from) return { removed: false, from: '' }
-  providers[route] = cur
-  const preserved: Record<string, unknown> = {}
-  const section = readSection(st, 'llm-pi-ai')
-  if (section) for (const k of Object.keys(section)) if (k !== 'providers') preserved[k] = section[k]
-  await st.replace('llm-pi-ai', makeHostPlain({ ...preserved, providers }))
+  await writeProviderProfile(st, route, cur)
   return { removed: true, from }
 }
 
@@ -1477,8 +1621,7 @@ export async function writeRouteReasoning(
 ): Promise<void> {
   const target = resolveTarget(route, st)
   if (target === undefined || !isDeepSeekNamespace(target.ns)) throw new Error(`${route} 不是 DeepSeek 官方路由`)
-  const user = readUserLayer(st, target.ns as Namespace) ?? {}
-  const next: Record<string, unknown> = { ...user }
+  const next: Record<string, unknown> = {}
   if (patch.reasoningEffort !== undefined) {
     if (!['off', 'low', 'high', 'max'].includes(patch.reasoningEffort)) throw new Error('reasoningEffort 只能是 off/low/high/max')
     next.reasoningEffort = patch.reasoningEffort
@@ -1487,7 +1630,7 @@ export async function writeRouteReasoning(
     if (!['enabled', 'disabled'].includes(patch.thinking)) throw new Error('thinking 只能是 enabled/disabled')
     next.thinking = patch.thinking
   }
-  await st.replace(target.ns, makeHostPlain(next), readRevision(st, target.ns as Namespace))
+  await writeSectionKeys(st, target.ns as Namespace, next)
 }
 
 /** 所有清单提供方键（诊断/工具用）。 */
