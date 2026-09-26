@@ -69,9 +69,11 @@ const currentBody = () => ({
   reasoningLevels: [], writable: true, declaredCount: 0,
   models: serverModels.map((m) => ({ ...m, suggested: {}, suggestedSource: '', configured: true })),
 })
+let providersGate = null
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url)
   if (path.endsWith('/providers')) {
+    if (providersGate) await providersGate
     return { json: async () => ({ ok: true, providers: [{ route: 'stub', displayName: 'Stub', api: 'openai-completions', baseURL: 'http://x', modelCount: serverModels.length, inManifest: true }] }) }
   }
   if (path.endsWith('/current')) return { json: async () => currentBody() }
@@ -127,7 +129,14 @@ const reactRoot = ReactDOMClient.createRoot(container)
 
 console.log('dsh-model-detector — 真实组件行为验证（jsdom + lib/client.js）\n')
 
+let releaseGate
+providersGate = new Promise((r) => { releaseGate = r })
 await act(async () => { reactRoot.render(React.createElement(Page)) })
+const initialEmpty = document.querySelector('.mc-empty')?.textContent ?? ''
+ok('首次挂载在请求返回前显示加载中', initialEmpty.includes('正在加载提供方'), initialEmpty)
+ok('首次挂载绝不提前误报「当前未配置任何提供方」', !initialEmpty.includes('当前未配置任何提供方'), initialEmpty)
+releaseGate()
+providersGate = null
 await flush()
 ok('提供方已加载', document.querySelector('.mc-select')?.options.length > 0)
 
@@ -206,6 +215,25 @@ ok('保存 model-b 后只剩 model-c 未保存',
   && cards.find((c) => c.id === 'model-c')?.label.trim() === '保存',
   JSON.stringify(cards.map((c) => `${c.id}=${c.label.trim()}`)))
 ok('顶部提示更新为「未保存 1 条」', document.querySelector('.mc-unsaved')?.textContent?.includes('1'), document.querySelector('.mc-unsaved')?.textContent ?? '(无)')
+
+// ── 验证切换 Tab（卸载后再挂载）状态保持与瞬间呈现 ─────────────────────────
+// 模拟切走：卸载组件
+await act(async () => { reactRoot.render(null) })
+ok('模拟切到其他设置页：组件已卸载', document.querySelectorAll('.mc-entry').length === 0)
+
+// 模拟切回：重新挂载组件（不等待异步网络 flush）
+await act(async () => { reactRoot.render(React.createElement(Page)) })
+// 重点：首帧即满状态，无需等待异步网络
+cards = readCards()
+ok('切回后首帧立即可见三条模型（0ms 呈现，不卡顿）', cards.length === 3, JSON.stringify(cards.map((c) => c.id)))
+ok('切回后未保存的 model-c 草稿完好无损', cardEl('model-c').querySelectorAll('.mc-input')[2].value === '128000', cardEl('model-c').querySelectorAll('.mc-input')[2].value)
+ok('切回后未保存的 model-c 仍显示「保存」', cards.find((c) => c.id === 'model-c')?.label.trim() === '保存')
+ok('切回后顶部提示「未保存 1 条」依然保留', document.querySelector('.mc-unsaved')?.textContent?.includes('1'))
+const emptyText = document.querySelector('.mc-empty')?.textContent ?? ''
+ok('切回后绝不误报「当前未配置任何提供方」', !emptyText.includes('当前未配置任何提供方'))
+await flush() // 静默 SWR 请求完成，不影响界面
+cards = readCards()
+ok('后台静默 SWR 刷新后模型依然完整', cards.length === 3)
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail === 0 ? 0 : 1)

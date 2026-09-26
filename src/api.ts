@@ -381,13 +381,34 @@ export function readProviders(st: SettingsService | undefined): Record<string, a
 }
 
 /**
+ * 取所有命名空间的 settings 描述符 Map（优化批量查询，避免重复全量遍历）。
+ */
+function getDescriptorsMap(st: SettingsService | undefined): Map<string, SettingsDescriptorLike> | undefined {
+  if (st === undefined || typeof st.describe !== 'function') return undefined
+  try {
+    const list = st.describe({ redactSecrets: false })
+    if (!Array.isArray(list)) return undefined
+    const map = new Map<string, SettingsDescriptorLike>()
+    for (const d of list) {
+      if (d && typeof d.ns === 'string') map.set(d.ns, d)
+    }
+    return map
+  } catch { return undefined }
+}
+
+/**
  * 列出所有可检测/可编辑的提供方：llm-pi-ai 已配置路由 + DeepSeek 官方适配器
  * （官方 API Key 路由 deepseek-official 与官方账号路由 deepseek-account）。
  */
 export function listConfiguredProviders(st: SettingsService | undefined) {
+  const descMap = getDescriptorsMap(st)
+  const piAiDesc = descMap?.get('llm-pi-ai')
+  const piAiProviders = descMap !== undefined
+    ? (asRecord(asRecord(piAiDesc?.user)?.providers) ?? asRecord(asRecord(piAiDesc?.value)?.providers) ?? {})
+    : readProviders(st)
+
   const out: Array<Record<string, unknown>> = []
-  for (const [route, p] of Object.entries(readProviders(st)) as Array<[string, any]>) {
-    const t = resolveTarget(route, st)
+  for (const [route, p] of Object.entries(piAiProviders) as Array<[string, any]>) {
     out.push({
       route,
       displayName: (p && typeof p.displayName === 'string' && p.displayName) || route,
@@ -395,20 +416,20 @@ export function listConfiguredProviders(st: SettingsService | undefined) {
       baseURL: p?.baseURL || manifestProvider(route)?.baseURL || '',
       modelCount: Array.isArray(p?.models) ? p.models.length : 0,
       inManifest: manifestProvider(route) !== undefined,
-      ns: t?.ns ?? 'llm-pi-ai',
-      target: isDeepSeekNamespace(t?.ns ?? '') ? 'deepseek' : 'pi-ai',
+      ns: 'llm-pi-ai',
+      target: 'pi-ai',
     })
   }
 
   // DeepSeek 官方 API Key 路由（llm-deepseek 或 llm-deepseek-api-key）
-  const officialNs: Namespace | undefined = namespaceRegistered(st, 'llm-deepseek')
-    ? 'llm-deepseek'
-    : namespaceRegistered(st, 'llm-deepseek-api-key')
-      ? 'llm-deepseek-api-key'
-      : undefined
+  const officialNs: Namespace | undefined = descMap !== undefined
+    ? (descMap.has('llm-deepseek') ? 'llm-deepseek' : descMap.has('llm-deepseek-api-key') ? 'llm-deepseek-api-key' : undefined)
+    : (namespaceRegistered(st, 'llm-deepseek') ? 'llm-deepseek' : namespaceRegistered(st, 'llm-deepseek-api-key') ? 'llm-deepseek-api-key' : undefined)
 
   if (officialNs !== undefined && !out.some((x) => x.route === DEEPSEEK_PROVIDER)) {
-    const section = readSection(st, officialNs) ?? {}
+    const section = descMap !== undefined
+      ? (asRecord(descMap.get(officialNs)?.value) ?? {})
+      : (readSection(st, officialNs) ?? {})
     const mp = manifestProvider(DEEPSEEK_PROVIDER)
     out.unshift({
       route: DEEPSEEK_PROVIDER,
@@ -424,8 +445,14 @@ export function listConfiguredProviders(st: SettingsService | undefined) {
   }
 
   // DeepSeek 官方账号路由（llm-deepseek-account）
-  if (namespaceRegistered(st, 'llm-deepseek-account') && !out.some((x) => x.route === DEEPSEEK_ACCOUNT_PROVIDER)) {
-    const section = readSection(st, 'llm-deepseek-account') ?? {}
+  const hasAccount = descMap !== undefined
+    ? descMap.has('llm-deepseek-account')
+    : namespaceRegistered(st, 'llm-deepseek-account')
+
+  if (hasAccount && !out.some((x) => x.route === DEEPSEEK_ACCOUNT_PROVIDER)) {
+    const section = descMap !== undefined
+      ? (asRecord(descMap.get('llm-deepseek-account')?.value) ?? {})
+      : (readSection(st, 'llm-deepseek-account') ?? {})
     const mp = manifestProvider(DEEPSEEK_ACCOUNT_PROVIDER)
     out.push({
       route: DEEPSEEK_ACCOUNT_PROVIDER,

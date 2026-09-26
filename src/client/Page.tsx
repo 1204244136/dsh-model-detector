@@ -87,41 +87,104 @@ interface CurrentInfo {
   declaredWarn?: string
 }
 
+export interface SessionCache {
+  providers: ProviderItem[] | null
+  providersLoaded: boolean
+  sel: string
+  mode: 'discover' | 'edit'
+  models: DiscoveredModel[]
+  selected: Set<string>
+  page: number
+  q: string
+  status: { ok: boolean; text: string } | null
+  meta: {
+    sourceCounts: Record<string, number>
+    modelsDevLoaded?: boolean
+    modelsDevProviders?: number
+    providerInModelsDev?: boolean
+    modelsDevError?: string
+    warn?: string
+  } | null
+  cur: CurrentInfo | null
+  drafts: Record<string, Draft>
+}
+
+const initialSessionStore = (): SessionCache => ({
+  providers: null,
+  providersLoaded: false,
+  sel: '',
+  mode: 'discover',
+  models: [],
+  selected: new Set(),
+  page: 1,
+  q: '',
+  status: null,
+  meta: null,
+  cur: null,
+  drafts: {},
+})
+
+/**
+ * 模块级会话缓存：解决 DSH 设置弹窗在切换左侧导航 tab 时 section 组件卸载再挂载
+ * 导致界面反复闪烁「当前未配置任何提供方」、状态与草稿丢失、重新卡顿等问题。
+ */
+let sessionStore: SessionCache = initialSessionStore()
+
+export function _resetSessionCache(): void {
+  sessionStore = initialSessionStore()
+}
+
 export function ModelCatalogPage(): React.ReactElement {
-  const [mode, setMode] = React.useState<'discover' | 'edit'>('discover')
-  const [providers, setProviders] = React.useState<ProviderItem[]>([])
-  const [sel, setSel] = React.useState('')
-  const [models, setModels] = React.useState<DiscoveredModel[]>([])
-  const [q, setQ] = React.useState('')
-  const [debouncedQ, setDebouncedQ] = React.useState('')
-  const [selected, setSelected] = React.useState<Set<string>>(new Set())
-  const [page, setPage] = React.useState(1)
+  const [mode, setMode] = React.useState<'discover' | 'edit'>(() => sessionStore.mode)
+  const [providers, setProviders] = React.useState<ProviderItem[]>(() => sessionStore.providers ?? [])
+  const [providersLoaded, setProvidersLoaded] = React.useState<boolean>(() => sessionStore.providersLoaded)
+  const [sel, setSel] = React.useState<string>(() => sessionStore.sel || (sessionStore.providers?.[0]?.route ?? ''))
+  const [models, setModels] = React.useState<DiscoveredModel[]>(() => sessionStore.models)
+  const [q, setQ] = React.useState<string>(() => sessionStore.q)
+  const [debouncedQ, setDebouncedQ] = React.useState<string>(() => sessionStore.q.trim().toLowerCase())
+  const [selected, setSelected] = React.useState<Set<string>>(() => new Set(sessionStore.selected))
+  const [page, setPage] = React.useState<number>(() => sessionStore.page)
   const [busy, setBusy] = React.useState(false)
-  const [status, setStatus] = React.useState<{ ok: boolean; text: string } | null>(null)
-  const [meta, setMeta] = React.useState<{ sourceCounts: Record<string, number>; modelsDevLoaded?: boolean; modelsDevProviders?: number; providerInModelsDev?: boolean; modelsDevError?: string; warn?: string } | null>(null)
+  const [status, setStatus] = React.useState<{ ok: boolean; text: string } | null>(() => sessionStore.status)
+  const [meta, setMeta] = React.useState<{ sourceCounts: Record<string, number>; modelsDevLoaded?: boolean; modelsDevProviders?: number; providerInModelsDev?: boolean; modelsDevError?: string; warn?: string } | null>(() => sessionStore.meta)
   // ── 编辑模式状态 ──
-  const [cur, setCur] = React.useState<CurrentInfo | null>(null)
-  const [drafts, setDrafts] = React.useState<Record<string, Draft>>({})
+  const [cur, setCur] = React.useState<CurrentInfo | null>(() => sessionStore.cur)
+  const [drafts, setDrafts] = React.useState<Record<string, Draft>>(() => ({ ...sessionStore.drafts }))
   const [savingId, setSavingId] = React.useState('')
   const [newId, setNewId] = React.useState('')
   /** 当前提供方路由的实时值：异步响应回来时用它判断"这份响应是否还属于当前视图"。 */
   const selRef = React.useRef(sel)
   selRef.current = sel
 
-  const loadProviders = async () => {
+  const loadProviders = async (background = false) => {
     try {
       const r = await fetch(`${API_PREFIX}/providers`, { headers: { accept: 'application/json' } })
       const j = await r.json()
       if (j?.ok && Array.isArray(j.providers)) {
+        sessionStore.providers = j.providers
+        sessionStore.providersLoaded = true
         setProviders(j.providers)
-        if (j.providers.length > 0) setSel((s) => s || j.providers[0].route)
+        setProvidersLoaded(true)
+        setSel((s) => {
+          const keep = s && j.providers.some((p: ProviderItem) => p.route === s)
+          const next = keep ? s : (j.providers[0]?.route ?? '')
+          sessionStore.sel = next
+          return next
+        })
       }
     } catch (e: any) {
-      setStatus({ ok: false, text: `加载提供方失败: ${String(e?.message ?? e)}` })
+      if (!background) {
+        const statusObj = { ok: false, text: `加载提供方失败: ${String(e?.message ?? e)}` }
+        setStatus(statusObj)
+        sessionStore.status = statusObj
+      }
     }
   }
 
-  React.useEffect(() => { void loadProviders() }, [])
+  React.useEffect(() => {
+    // 首次挂载：若尚未加载过，走普通加载；若已有缓存，走后台静默刷新（SWR）
+    void loadProviders(sessionStore.providersLoaded)
+  }, [])
 
   const selProvider = providers.find((p) => p.route === sel)
 
@@ -143,17 +206,29 @@ export function ModelCatalogPage(): React.ReactElement {
   const pageStart = filtered.length === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
   const pageEnd = Math.min(safePage * PAGE_SIZE, filtered.length)
 
-  React.useEffect(() => { if (page > totalPages) setPage(totalPages) }, [page, totalPages])
+  React.useEffect(() => { if (page > totalPages) { setPage(totalPages); sessionStore.page = totalPages } }, [page, totalPages])
 
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id); else next.add(id)
+      sessionStore.selected = next
       return next
     })
   }
 
-  const resetView = () => { setStatus(null); setMeta(null); setModels([]); setPage(1); setQ(''); setDebouncedQ(''); setSelected(new Set()); setCur(null); setDrafts({}); setNewId('') }
+  const resetView = () => {
+    setStatus(null); sessionStore.status = null
+    setMeta(null); sessionStore.meta = null
+    setModels([]); sessionStore.models = []
+    setPage(1); sessionStore.page = 1
+    setQ(''); sessionStore.q = ''
+    setDebouncedQ('')
+    setSelected(new Set()); sessionStore.selected = new Set()
+    setCur(null); sessionStore.cur = null
+    setDrafts({}); sessionStore.drafts = {}
+    setNewId('')
+  }
 
   const discover = async () => {
     if (!sel) return
@@ -168,18 +243,37 @@ export function ModelCatalogPage(): React.ReactElement {
         const list: DiscoveredModel[] = j.models || []
         const auto = list.length <= AUTO_SELECT_LIMIT ? new Set(list.map((m) => m.id)) : new Set<string>()
         setModels(list)
+        sessionStore.models = list
         setSelected(auto)
+        sessionStore.selected = auto
         // models.dev 诊断：让「是否已加载 / 是否收录 / 线上为何失败」可见，避免静默降级
-        setMeta({ sourceCounts: j.sourceCounts || {}, modelsDevLoaded: j.modelsDevLoaded, modelsDevProviders: j.modelsDevProviders, providerInModelsDev: j.providerInModelsDev, modelsDevError: j.modelsDevError, warn: typeof j.warn === 'string' ? j.warn : undefined })
+        const metaObj = {
+          sourceCounts: j.sourceCounts || {},
+          modelsDevLoaded: j.modelsDevLoaded,
+          modelsDevProviders: j.modelsDevProviders,
+          providerInModelsDev: j.providerInModelsDev,
+          modelsDevError: j.modelsDevError,
+          warn: typeof j.warn === 'string' ? j.warn : undefined,
+        }
+        setMeta(metaObj)
+        sessionStore.meta = metaObj
         const hint = list.length === 0 ? '' : auto.size > 0 ? '（已自动全选，可应用）' : '（数量较大，请用搜索或手动勾选）'
-        setStatus({ ok: true, text: `获取到 ${list.length} 个模型${hint}` })
+        const statusObj = { ok: true, text: `获取到 ${list.length} 个模型${hint}` }
+        setStatus(statusObj)
+        sessionStore.status = statusObj
       } else {
-        setStatus({ ok: false, text: j?.error || '获取失败' })
+        const statusObj = { ok: false, text: j?.error || '获取失败' }
+        setStatus(statusObj)
+        sessionStore.status = statusObj
         setMeta(null)
+        sessionStore.meta = null
       }
     } catch (e: any) {
-      setStatus({ ok: false, text: `获取失败: ${String(e?.message ?? e)}` })
+      const statusObj = { ok: false, text: `获取失败: ${String(e?.message ?? e)}` }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
       setMeta(null)
+      sessionStore.meta = null
     } finally { setBusy(false) }
   }
 
@@ -200,9 +294,14 @@ export function ModelCatalogPage(): React.ReactElement {
     const full = opts.syncIds === undefined
     const quiet = opts.quiet === true
     if (full) {
-      setBusy(true); setStatus(null); setModels([]); setSelected(new Set()); setPage(1); setQ(''); setDebouncedQ('')
+      setBusy(true); setStatus(null); sessionStore.status = null
+      setModels([]); sessionStore.models = []
+      setSelected(new Set()); sessionStore.selected = new Set()
+      setPage(1); sessionStore.page = 1
+      setQ(''); sessionStore.q = ''; setDebouncedQ('')
     } else if (!quiet) {
       setStatus(null)
+      sessionStore.status = null
     }
     try {
       const r = await fetch(`${API_PREFIX}/current`, {
@@ -215,45 +314,79 @@ export function ModelCatalogPage(): React.ReactElement {
       if (j?.ok) {
         const info = j as CurrentInfo
         setCur(info)
+        sessionStore.cur = info
         // 局部同步：只重建 syncIds 里的条目，其余草稿原样保留
-        setDrafts((prev) => mergeDrafts(prev, info.models, info.target, opts.syncIds))
+        setDrafts((prev) => {
+          const next = mergeDrafts(prev, info.models, info.target, opts.syncIds)
+          sessionStore.drafts = next
+          return next
+        })
         if (!full && quiet) return
         // 建议值来源要如实告知：拉到线上声明时以它为准，拉不到就只剩 models.dev（可能偏乐观）
         const src = (info.declaredCount ?? 0) > 0
           ? `；建议值优先用线上声明（${info.declaredCount} 条）`
           : info.declaredWarn ? '；未取到线上声明，建议值仅来自 models.dev' : ''
-        setStatus({ ok: true, text: `共 ${info.models.length} 个模型（${info.target === 'deepseek' ? 'DeepSeek 官方 API' : 'pi-ai'} · 写入 ${info.ns}）${src}` })
+        const statusObj = { ok: true, text: `共 ${info.models.length} 个模型（${info.target === 'deepseek' ? 'DeepSeek 官方 API' : 'pi-ai'} · 写入 ${info.ns}）${src}` }
+        setStatus(statusObj)
+        sessionStore.status = statusObj
       } else {
-        if (!quiet) setStatus({ ok: false, text: j?.error || '读取现有模型失败' })
-        if (full) setCur(null)
+        if (!quiet) {
+          const statusObj = { ok: false, text: j?.error || '读取现有模型失败' }
+          setStatus(statusObj)
+          sessionStore.status = statusObj
+        }
+        if (full) {
+          setCur(null)
+          sessionStore.cur = null
+        }
       }
     } catch (e: any) {
       if (route !== selRef.current) return
-      if (!quiet) setStatus({ ok: false, text: `读取现有模型失败: ${String(e?.message ?? e)}` })
-      if (full) setCur(null)
+      if (!quiet) {
+        const statusObj = { ok: false, text: `读取现有模型失败: ${String(e?.message ?? e)}` }
+        setStatus(statusObj)
+        sessionStore.status = statusObj
+      }
+      if (full) {
+        setCur(null)
+        sessionStore.cur = null
+      }
     } finally { if (full) setBusy(false) }
   }
 
   const apply = async () => {
     if (!sel) return
     const picked = models.filter((m) => selected.has(m.id))
-    if (picked.length === 0) { setStatus({ ok: false, text: '未选择任何模型' }); return }
-    setBusy(true); setStatus(null)
+    if (picked.length === 0) {
+      const statusObj = { ok: false, text: '未选择任何模型' }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
+      return
+    }
+    setBusy(true); setStatus(null); sessionStore.status = null
     try {
       const r = await fetch(`${API_PREFIX}/apply`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ route: sel, models: picked }),
       })
       const j = await r.json()
-      setStatus(j?.ok ? { ok: true, text: `已写入 ${j.count} 个模型到 ${j.route}（${j.ns}）` } : { ok: false, text: j?.error || '应用失败' })
+      const statusObj = j?.ok ? { ok: true, text: `已写入 ${j.count} 个模型到 ${j.route}（${j.ns}）` } : { ok: false, text: j?.error || '应用失败' }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
       if (j?.ok) void loadProviders()
     } catch (e: any) {
-      setStatus({ ok: false, text: `应用失败: ${String(e?.message ?? e)}` })
+      const statusObj = { ok: false, text: `应用失败: ${String(e?.message ?? e)}` }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
     } finally { setBusy(false) }
   }
 
   const patchDraft = (id: string, patch: Partial<Draft>) => {
-    setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+    setDrafts((prev) => {
+      const next = { ...prev, [id]: { ...prev[id], ...patch } }
+      sessionStore.drafts = next
+      return next
+    })
   }
 
   const adopt = (m: EditableModel) => {
@@ -272,60 +405,83 @@ export function ModelCatalogPage(): React.ReactElement {
   const saveModel = async (m: EditableModel) => {
     const d = drafts[m.id]
     if (!d) return
-    setSavingId(m.id); setStatus(null)
+    setSavingId(m.id); setStatus(null); sessionStore.status = null
     try {
       const r = await fetch(`${API_PREFIX}/save-model`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ route: sel, model: draftToModel(d, cur?.target ?? 'pi-ai') }),
       })
       const j = await r.json()
-      setStatus(j?.ok ? { ok: true, text: `已保存 ${j.id}（写入 ${j.ns}${j.key ? '.' + j.key : ''}）` } : { ok: false, text: j?.error || '保存失败' })
+      const statusObj = j?.ok ? { ok: true, text: `已保存 ${j.id}（写入 ${j.ns}${j.key ? '.' + j.key : ''}）` } : { ok: false, text: j?.error || '保存失败' }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
       // 只重同步这一条：整体重建会丢掉其它卡片上未保存的编辑，并让它们的按钮假装「已保存」
       if (j?.ok) { void loadProviders(); void loadCurrent({ syncIds: [m.id], quiet: true }) }
     } catch (e: any) {
-      setStatus({ ok: false, text: `保存失败: ${String(e?.message ?? e)}` })
+      const statusObj = { ok: false, text: `保存失败: ${String(e?.message ?? e)}` }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
     } finally { setSavingId('') }
   }
 
   const removeModel = async (m: EditableModel) => {
-    setSavingId(m.id); setStatus(null)
+    setSavingId(m.id); setStatus(null); sessionStore.status = null
     try {
       const r = await fetch(`${API_PREFIX}/remove-model`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ route: sel, id: m.id }),
       })
       const j = await r.json()
-      setStatus(j?.ok ? { ok: j.removed, text: j.removed ? `已从 ${j.from} 删除 ${m.id}` : `${m.id} 不在配置里（可能来自适配器默认目录）` } : { ok: false, text: j?.error || '删除失败' })
+      const statusObj = j?.ok ? { ok: j.removed, text: j.removed ? `已从 ${j.from} 删除 ${m.id}` : `${m.id} 不在配置里（可能来自适配器默认目录）` } : { ok: false, text: j?.error || '删除失败' }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
       // 只重同步这一条：服务端已无此 id → mergeDrafts 把它从草稿表里移除
       if (j?.ok && j.removed) { void loadProviders(); void loadCurrent({ syncIds: [m.id], quiet: true }) }
     } catch (e: any) {
-      setStatus({ ok: false, text: `删除失败: ${String(e?.message ?? e)}` })
+      const statusObj = { ok: false, text: `删除失败: ${String(e?.message ?? e)}` }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
     } finally { setSavingId('') }
   }
 
   const saveRouteSettings = async (patch: { reasoningEffort?: string; thinking?: string }) => {
-    setBusy(true); setStatus(null)
+    setBusy(true); setStatus(null); sessionStore.status = null
     try {
       const r = await fetch(`${API_PREFIX}/route-settings`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ route: sel, ...patch }),
       })
       const j = await r.json()
-      setStatus(j?.ok ? { ok: true, text: '已保存路由级设置' } : { ok: false, text: j?.error || '保存失败' })
+      const statusObj = j?.ok ? { ok: true, text: '已保存路由级设置' } : { ok: false, text: j?.error || '保存失败' }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
       // 路由级设置不改模型条目，局部同步即可（同样不能整体重建，否则会丢弃未保存的编辑）
       if (j?.ok) void loadCurrent({ syncIds: [], quiet: true })
     } catch (e: any) {
-      setStatus({ ok: false, text: `保存失败: ${String(e?.message ?? e)}` })
+      const statusObj = { ok: false, text: `保存失败: ${String(e?.message ?? e)}` }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
     } finally { setBusy(false) }
   }
 
   const addManual = () => {
     const id = newId.trim()
     if (!id) return
-    if (drafts[id]) { setStatus({ ok: false, text: `${id} 已在列表中` }); return }
-    setDrafts((prev) => ({ ...prev, [id]: toDraft(id, {}, cur?.target ?? 'pi-ai') }))
+    if (drafts[id]) {
+      const statusObj = { ok: false, text: `${id} 已在列表中` }
+      setStatus(statusObj)
+      sessionStore.status = statusObj
+      return
+    }
+    setDrafts((prev) => {
+      const next = { ...prev, [id]: toDraft(id, {}, cur?.target ?? 'pi-ai') }
+      sessionStore.drafts = next
+      return next
+    })
     setNewId('')
-    setStatus({ ok: true, text: `已加入 ${id}，填好参数后点「保存」` })
+    const statusObj = { ok: true, text: `已加入 ${id}，填好参数后点「保存」` }
+    setStatus(statusObj)
+    sessionStore.status = statusObj
   }
 
   /** 全部可编辑条目（服务端现有 + 本地手填），不受搜索影响。 */
@@ -475,24 +631,44 @@ export function ModelCatalogPage(): React.ReactElement {
             <span className="mc-fieldLabel">提供方</span>
             <select
               className="mc-select"
-              title={selProvider ? `${selProvider.displayName}（${selProvider.route}）` : ''}
+              disabled={!providersLoaded}
+              title={selProvider ? `${selProvider.displayName}（${selProvider.route}）` : !providersLoaded ? '正在加载提供方…' : ''}
               value={sel}
-              onChange={(e) => { setSel(e.target.value); setModels([]); setSelected(new Set()); setPage(1); setCur(null); setDrafts({}); setStatus(null) }}
+              onChange={(e) => {
+                const next = e.target.value
+                setSel(next)
+                sessionStore.sel = next
+                setModels([])
+                sessionStore.models = []
+                setSelected(new Set())
+                sessionStore.selected = new Set()
+                setPage(1)
+                sessionStore.page = 1
+                setCur(null)
+                sessionStore.cur = null
+                setDrafts({})
+                sessionStore.drafts = {}
+                setStatus(null)
+                sessionStore.status = null
+              }}
             >
+              {!providersLoaded && providers.length === 0 && (
+                <option value="">正在加载提供方…</option>
+              )}
               {providers.map((p) => <option key={p.route} value={p.route} title={`${p.displayName}（${p.route}）`}>{p.displayName}</option>)}
             </select>
           </label>
           <div className="mc-actions">
             <button
               className="mc-btn mc-btnPrimary"
-              disabled={busy || !sel}
+              disabled={busy || !sel || !providersLoaded}
               onClick={() => (mode === 'edit' ? void loadCurrent() : void discover())}
               title={mode === 'edit' && unsavedCount > 0 ? `会以服务端为准重新读取，丢弃 ${unsavedCount} 条未保存的改动` : undefined}
             >
               <span className={`mc-btnIcon ${busy ? 'mc-spin' : ''}`}>↻</span>{mode === 'edit' ? '读取现有模型' : '获取最新模型'}
             </button>
             {mode === 'discover' && (
-              <button className="mc-btn mc-btnAccent" disabled={busy || selected.size === 0} onClick={apply}>
+              <button className="mc-btn mc-btnAccent" disabled={busy || selected.size === 0 || !providersLoaded} onClick={apply}>
                 应用所选<span className="mc-btnBadge">{selected.size}</span>
               </button>
             )}
@@ -500,8 +676,28 @@ export function ModelCatalogPage(): React.ReactElement {
         </div>
         <div className="mc-row">
           <span className="mc-segGroup">
-            <button type="button" className={`mc-seg ${mode === 'discover' ? 'mc-segOn' : ''}`} onClick={() => { setMode('discover'); resetView() }}>发现新模型</button>
-            <button type="button" className={`mc-seg ${mode === 'edit' ? 'mc-segOn' : ''}`} onClick={() => { setMode('edit'); resetView() }}>编辑现有模型</button>
+            <button
+              type="button"
+              className={`mc-seg ${mode === 'discover' ? 'mc-segOn' : ''}`}
+              onClick={() => {
+                setMode('discover')
+                sessionStore.mode = 'discover'
+                resetView()
+              }}
+            >
+              发现新模型
+            </button>
+            <button
+              type="button"
+              className={`mc-seg ${mode === 'edit' ? 'mc-segOn' : ''}`}
+              onClick={() => {
+                setMode('edit')
+                sessionStore.mode = 'edit'
+                resetView()
+              }}
+            >
+              编辑现有模型
+            </button>
           </span>
           {selProvider && (
             <div className="mc-metaRow">
@@ -550,17 +746,63 @@ export function ModelCatalogPage(): React.ReactElement {
               <div className="mc-toolbar">
                 <div className="mc-search">
                   <span className="mc-searchIcon">⌕</span>
-                  <input className="mc-input" value={q} placeholder="搜索已发现模型（id / 模态）" onChange={(e) => setQ(e.target.value)} />
+                  <input
+                    className="mc-input"
+                    value={q}
+                    placeholder="搜索已发现模型（id / 模态）"
+                    onChange={(e) => {
+                      setQ(e.target.value)
+                      sessionStore.q = e.target.value
+                    }}
+                  />
                 </div>
-                <button className="mc-btn mc-btnSecondary mc-btnDense" onClick={() => setSelected(new Set(filtered.map((m) => m.id)))}>全选当前（{filtered.length}）</button>
-                <button className="mc-btn mc-btnSecondary mc-btnDense" onClick={() => setSelected(new Set())}>清空</button>
+                <button
+                  className="mc-btn mc-btnSecondary mc-btnDense"
+                  onClick={() => {
+                    const allFiltered = new Set(filtered.map((m) => m.id))
+                    setSelected(allFiltered)
+                    sessionStore.selected = allFiltered
+                  }}
+                >
+                  全选当前（{filtered.length}）
+                </button>
+                <button
+                  className="mc-btn mc-btnSecondary mc-btnDense"
+                  onClick={() => {
+                    const emptySet = new Set<string>()
+                    setSelected(emptySet)
+                    sessionStore.selected = emptySet
+                  }}
+                >
+                  清空
+                </button>
               </div>
               <div className="mc-toolbar mc-toolbarEnd">
                 <span className="mc-pageRange">共 {filtered.length} 个 · 本页 {pageStart}-{pageEnd}</span>
                 <div className="mc-pager">
-                  <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={safePage <= 1} onClick={() => setPage((p) => p - 1)}>上一页</button>
+                  <button
+                    className="mc-btn mc-btnSecondary mc-btnDense"
+                    disabled={safePage <= 1}
+                    onClick={() => {
+                      const next = safePage - 1
+                      setPage(next)
+                      sessionStore.page = next
+                    }}
+                  >
+                    上一页
+                  </button>
                   <span className="mc-pageNow">{safePage} / {totalPages} 页</span>
-                  <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={safePage >= totalPages} onClick={() => setPage((p) => p + 1)}>下一页</button>
+                  <button
+                    className="mc-btn mc-btnSecondary mc-btnDense"
+                    disabled={safePage >= totalPages}
+                    onClick={() => {
+                      const next = safePage + 1
+                      setPage(next)
+                      sessionStore.page = next
+                    }}
+                  >
+                    下一页
+                  </button>
                 </div>
               </div>
 
@@ -604,7 +846,7 @@ export function ModelCatalogPage(): React.ReactElement {
             </>
           )}
 
-          {models.length === 0 && !busy && providers.length > 0 && (
+          {models.length === 0 && !busy && providersLoaded && providers.length > 0 && (
             <div className="mc-empty">选择提供方后点击「获取最新模型」</div>
           )}
         </>
@@ -643,7 +885,15 @@ export function ModelCatalogPage(): React.ReactElement {
               <div className="mc-toolbar">
                 <div className="mc-search">
                   <span className="mc-searchIcon">⌕</span>
-                  <input className="mc-input" value={q} placeholder="搜索模型号 / 展示名" onChange={(e) => setQ(e.target.value)} />
+                  <input
+                    className="mc-input"
+                    value={q}
+                    placeholder="搜索模型号 / 展示名"
+                    onChange={(e) => {
+                      setQ(e.target.value)
+                      sessionStore.q = e.target.value
+                    }}
+                  />
                 </div>
                 <div className="mc-addBox">
                   <input className="mc-input" value={newId} placeholder="手填模型号，如 deepseek-v4.1-flash-expires-on-0910" onChange={(e) => setNewId(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addManual() }} />
@@ -658,9 +908,29 @@ export function ModelCatalogPage(): React.ReactElement {
                 )}
                 <span className="mc-pageRange">共 {filteredEdit.length} 个 · 本页 {editPageModels.length}</span>
                 <div className="mc-pager">
-                  <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={editSafePage <= 1} onClick={() => setPage((p) => p - 1)}>上一页</button>
+                  <button
+                    className="mc-btn mc-btnSecondary mc-btnDense"
+                    disabled={editSafePage <= 1}
+                    onClick={() => {
+                      const next = editSafePage - 1
+                      setPage(next)
+                      sessionStore.page = next
+                    }}
+                  >
+                    上一页
+                  </button>
                   <span className="mc-pageNow">{editSafePage} / {editTotalPages} 页</span>
-                  <button className="mc-btn mc-btnSecondary mc-btnDense" disabled={editSafePage >= editTotalPages} onClick={() => setPage((p) => p + 1)}>下一页</button>
+                  <button
+                    className="mc-btn mc-btnSecondary mc-btnDense"
+                    disabled={editSafePage >= editTotalPages}
+                    onClick={() => {
+                      const next = editSafePage + 1
+                      setPage(next)
+                      sessionStore.page = next
+                    }}
+                  >
+                    下一页
+                  </button>
                 </div>
               </div>
 
@@ -669,13 +939,21 @@ export function ModelCatalogPage(): React.ReactElement {
             </>
           )}
 
-          {cur === null && !busy && providers.length > 0 && (
+          {cur === null && !busy && providersLoaded && providers.length > 0 && (
             <div className="mc-empty">选择提供方后点击「读取现有模型」，逐条改参数（模态 / 容量 / 思考档位）</div>
           )}
         </>
       )}
 
-      {providers.length === 0 && !busy && (
+      {/* 首次加载中：绝不提前误报「当前未配置任何提供方」 */}
+      {!providersLoaded && (
+        <div className="mc-empty mc-loading">
+          <span className="mc-btnIcon mc-spin">↻</span>正在加载提供方…
+        </div>
+      )}
+
+      {/* 确实已加载完毕，但没有任何已配置的提供方 */}
+      {providersLoaded && providers.length === 0 && !busy && (
         <div className="mc-empty">当前未配置任何提供方</div>
       )}
     </div>
